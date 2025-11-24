@@ -390,43 +390,52 @@ class LuaSandbox
 {
     ...
 private:
-    using LibNames = std::vector<std::string_view>; // Да - vector,
-                                                    // да - динамическая аллокация,
-                                                    // да - "но геймдев же...", 
-                                                    // и да - нужно переделать на constexpr
-                                                    // но, чтобы не усложнять - пока оставим
+    using LibNames = std::vector<std::string_view>;
 
     struct LibSymbolsRules
     {
         LibNames allowed{};                     // Белый список
-        LibNames restricted{};                  // Чёрный, соответственно
+        LibNames restricted{};                  // Чёрный
         bool allowedAllExceptRestricted{false}; // Определяет какой из списков используется
     };
-    using LibsSandboxingRulesMap = std::map<sol::lib, LibSymbolsRules>; // Да map,
-                                                                        // и далее по списку )
+    using LibsSandboxingRulesMap = std::map<sol::lib, LibSymbolsRules>;
 
-    // И да, это определение потом придётся вынести в cpp-файл
-    inline static const LibsSandboxingRulesMap libsSandboxingRules = {
-        {sol::lib::base,
-            {.allowed = {"assert", "error", "ipairs", "next", "pairs",
-                         "pcall", "select", "tonumber", "tostring",
-                         "type", "unpack", "_VERSION", "xpcall"}}},
-        {sol::lib::coroutine,
-            {.allowedAllExceptRestricted = true}},
-        {sol::lib::math,
-            {.allowedAllExceptRestricted = true,
-             .restricted = {"random", "randomseed"}}},
-        {sol::lib::os, 
-            {.allowed = {"clock", "difftime", "time"}}},
-        {sol::lib::string,
-            {.allowedAllExceptRestricted = true,
-             .restricted = {"dump"}}},
-        {sol::lib::table,
-            {.allowedAllExceptRestricted = true}}
-    };
+	static const LibsSandboxingRulesMap libsSandboxingRules;
     ...
 };
+
+const LuaSandbox::LibsSandboxingRulesMap
+LuaSandbox::libsSandboxingRules{
+    {sol::lib::base,
+        {.allowed = {"assert", "error", "ipairs", "next", "pairs",
+                     "pcall", "select", "tonumber", "tostring",
+                     "type", "unpack", "_VERSION", "xpcall"}}},
+    {sol::lib::coroutine,
+        {.allowedAllExceptRestricted = true}},
+    {sol::lib::math,
+        {.allowedAllExceptRestricted = true,
+         .restricted = {"random", "randomseed"}}},
+    {sol::lib::os, 
+        {.allowed = {"clock", "difftime", "time"}}},
+    {sol::lib::string,
+        {.allowedAllExceptRestricted = true,
+         .restricted = {"dump"}}},
+    {sol::lib::table,
+        {.allowedAllExceptRestricted = true}}
+};
 ```
+
+<details>
+<summary> Так, здесь будет вынужденное отступление от основной темы. А именно, по поводу использования в геймдеве типов работающих с динамической аллокацией памяти. </summary>
+
+Ведь все эти `std::vector`, `std::map` и `std::set` чуть выше по тексту - это как раз они.
+
+Да, конкретно в данной ситуации, они не оказывают вообще никакого влияния ни на производительность, ни на фрагментацию памяти - просто в силу своего размера и того, что используются по большей части только в момент инициализации. Но для чистоты, `set` так и просится заменить его на какой-нибудь `bit_set`, а `map` и `vector`, в которых у нас сейчас сидят правила и список имён таблиц, недоумевают - почему они здесь отдуваются за что-нибудь `constexpr` производное от того же `array`, например?
+
+Просто, с точки зрения наглядности и читабельности, так лучше, а оптимизацию оставим на потом, когда она реально понадобится. ...Кто сказал Технический долг? Не понимаю о чём вы.
+</details>
+
+---
 
 На этом с правилами закончили. Теперь, в соответствии с ними, нужно загрузить сами библиотеки.
 
@@ -548,15 +557,15 @@ namespace lua
 ```
 И завершаем картину с библиотеками последними штрихами - интерфейс для их загрузки:
 ```cpp
-// Кстати, С++ - это очень элегантный и выразительный язык.
-// Например, обратите внимание, на эту лаконичную запись синонима для 
-// "Какой-нибудь контейнер с sol::lib внутри"
+// С++ - очень элегантный и лаконичный язык, который позволяет изящно и непринуждённо
+// выразить синоним для "Какой-нибудь итерируемый контейнер с sol::lib внутри"
 template <typename T>
 concept SolLibContainer =
-    std::ranges::range<T>
-    && std::same_as<std::remove_cvref_t<std::ranges::range_value_t<T>>, sol::lib>;
+	std::ranges::range<T> 
+	&& std::same_as<std::ranges::range_value_t<T>, sol::lib>;
 
-// Библиотеки можем грузить сразу пачкой
+// Благодаря чему, мы сможем почти из любого контейнера
+// грузить библиотеки сразу пачкой.
 void LuaSandbox::loadLibs(const SolLibContainer auto &libs)
 {
     for (const auto &lib : libs) {
@@ -564,7 +573,7 @@ void LuaSandbox::loadLibs(const SolLibContainer auto &libs)
     }
 }
 
-// или по одной.
+// Ну или по одной.
 bool LuaSandbox::loadLib(sol::lib lib)
 {
     const auto rules = checkRulesFor(lib); // Для неё правила есть вообще?
@@ -602,10 +611,7 @@ private:
     auto LuaSandbox::checkRulesFor(sol::lib lib) const noexcept
         -> opt_cref<LibSymbolsRules>
 
-    std::set<sol::lib> loadedLibs; // Список уже загруженных библиотек
-    // ... опять?
-    // Да, std::set. Да - динамическая аллокация... и дальше по списку.
-    // ~~Расстреля~~ Переделать. И в LuaRuntime тоже.
+    std::set<sol::lib> loadedLibs;
     ...
 };
 ```
@@ -1055,6 +1061,8 @@ private:
 	auto dofileReplace(sol::stack_object fileName) -> sol::protected_function_result;
 	auto requireReplace(sol::stack_object target) -> sol::protected_function_result;
 
+    void loadSafeExternalScriptFilesRoutine();
+
 	[[nodiscard]]
 	auto toScriptPath(const std::string &fileName) const -> fs::path;
 
@@ -1063,6 +1071,12 @@ private:
 
     ...
 };
+
+void LuaSandbox::loadSafeExternalScriptFilesRoutine()
+{
+	sandbox.set_function("dofile", &LuaSandbox::dofileReplace, this);
+	sandbox.set_function("require", &LuaSandbox::requireReplace, this);
+}
 
 ```
 
