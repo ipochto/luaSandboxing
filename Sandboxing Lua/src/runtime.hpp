@@ -121,7 +121,7 @@ private:
 	void loadSafePrint();
 
 private:
-	LuaRuntime *runtime = {nullptr};
+	LuaRuntime *runtime {nullptr};
 	sol::environment sandbox;
 
 	Presets preset{Presets::Core};
