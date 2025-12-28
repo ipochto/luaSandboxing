@@ -14,13 +14,63 @@ concept SolLibContainer =
 	std::ranges::range<T> 
 	&& std::same_as<std::ranges::range_value_t<T>, sol::lib>;
 
+namespace lua
+{
+	[[nodiscard]]
+	constexpr auto libName(sol::lib lib) noexcept -> std::optional<std::string_view>;
+
+	[[nodiscard]]
+	constexpr auto libByName(std::string_view libName) noexcept -> std::optional<sol::lib>;
+
+	[[nodiscard]]
+	constexpr auto libLookupName(sol::lib lib) noexcept -> std::string_view;
+
+	[[nodiscard]]
+	auto toString(const sol::object &obj) -> std::string;
+
+	[[nodiscard]]
+	bool isBytecode(const fs::path &file);
+
+	[[nodiscard]]
+	auto makeFnCallResult(sol::state &lua,
+						  const auto &object,
+						  sol::call_status callStatus = sol::call_status::ok)
+		-> sol::protected_function_result;
+
+	namespace memory
+	{
+		constexpr size_t c1MB = 1L * 1024 * 1024;
+		constexpr size_t cDefaultMemLimit = c1MB;
+
+		struct LimitedAllocatorState
+		{
+			size_t used {};
+			size_t limit {cDefaultMemLimit};
+			bool limitReached {false};
+			bool overflow {false};
+		};
+
+		void *limitedAlloc(void *ud, void *ptr, size_t currSize, size_t newSize) noexcept;
+
+	} // namespace memory
+} // namespace lua
+
 class LuaRuntime
 {
+private:
+	std::set<sol::lib> loadedLibs;
+	lua::memory::LimitedAllocatorState allocatorState;
+
 public:
 	sol::state state;
 
 	LuaRuntime() = default;
 	~LuaRuntime() = default;
+
+	LuaRuntime(size_t memoryLimit)
+		: allocatorState({.limit = memoryLimit})
+		, state(sol::default_at_panic, lua::memory::limitedAlloc, &allocatorState)
+	{}
 
 	LuaRuntime(const LuaRuntime &) = delete;
 	LuaRuntime(LuaRuntime &&) = delete;
@@ -31,12 +81,9 @@ public:
 	{
 		if (!loadedLibs.contains(lib)) {
 			state.open_libraries(lib);
-			loadedLibs.insert(lib);		
+			loadedLibs.insert(lib);
 		}
 	}
-
-private:
-	std::set<sol::lib> loadedLibs;
 };
 
 class LuaSandbox
@@ -121,7 +168,7 @@ private:
 	void loadSafePrint();
 
 private:
-	LuaRuntime *runtime = {nullptr};
+	LuaRuntime *runtime {nullptr};
 	sol::environment sandbox;
 
 	Presets preset{Presets::Core};
@@ -137,27 +184,3 @@ private:
 	static const SandboxPresets sandboxPresets;
 	static const LibsSandboxingRulesMap libsSandboxingRules;
 };
-
-namespace lua
-{
-	[[nodiscard]]
-	constexpr auto libName(sol::lib lib) noexcept -> std::optional<std::string_view>;
-
-	[[nodiscard]]
-	constexpr auto libByName(std::string_view libName) noexcept -> std::optional<sol::lib>;
-
-	[[nodiscard]]
-	constexpr auto libLookupName(sol::lib lib) noexcept -> std::string_view;
-
-	[[nodiscard]]
-	auto toString(const sol::object &obj) -> std::string;
-
-	[[nodiscard]]
-	bool isBytecode(const fs::path &file);
-
-	[[nodiscard]]
-	auto makeFnCallResult(sol::state &lua,
-						  const auto &object,
-						  sol::call_status callStatus = sol::call_status::ok)
-		-> sol::protected_function_result;
-} // namespace lua

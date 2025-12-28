@@ -75,7 +75,7 @@ namespace lua
 	constexpr auto libName(sol::lib lib) noexcept -> std::optional<std::string_view>
 	{
 		auto findLib = [lib](auto &lookup) -> bool { return lookup.lib == lib; };
-		
+
 		const auto &libs = lua::details::libsNames;
 		if (const auto it = ranges::find_if(libs, findLib); it != libs.end()) {
 			return it->name;
@@ -133,6 +133,58 @@ namespace lua
 		sol::stack::push(lua, object);
 		return sol::protected_function_result {lua, -1, isResultValid ? 1 : 0, 1, callStatus};
 	}
+
+	namespace memory
+	{
+		void *limitedAlloc(void *ud, void *ptr, size_t currSize, size_t newSize) noexcept
+		{
+			auto *allocState = static_cast<LimitedAllocatorState*>(ud);
+
+			if (allocState == nullptr) {
+				assert((allocState != nullptr) && "Pointer to the allocator state must be provided.");
+				return nullptr;
+			}
+
+			if (ptr == nullptr) {
+				currSize = 0;
+			}
+			if (newSize == 0) {
+				if (ptr != nullptr) {
+					allocState->used -= (allocState->used >= currSize) ? currSize
+																	   : allocState->used;
+				}
+				std::free(ptr);
+				return nullptr;
+			}
+			const size_t usedBase = (allocState->used >= currSize) ? allocState->used - currSize
+																   : 0;
+
+			if (newSize > (std::numeric_limits<size_t>::max() - usedBase)) {
+				spdlog::error("Lua allocator: arithmetic overflow while computing memory usage "
+							  "[used: {}, requested more for: {}, size_t max: {}]",
+							  usedBase,
+							  newSize,
+							  std::numeric_limits<size_t>::max());
+				allocState->overflow = true;
+				return nullptr;
+			}
+			const size_t newUsed = usedBase + newSize;
+			if (newUsed > allocState->limit) {
+				spdlog::error("Lua allocator: memory limit reached "
+							  "[limit: {}, used: {}, requested total: {}]",
+							  allocState->limit,
+							  allocState->used,
+							  newUsed);
+				allocState->limitReached = true;
+				return nullptr;
+			}
+			void *newPtr = std::realloc(ptr, newSize);
+			if (newPtr != nullptr) {
+				allocState->used = newUsed;
+			}
+			return newPtr;
+		}
+	} // namespace memory
 } // namespace lua
 
 void LuaSandbox::reset(bool doCollectGrbg /* = false */)
