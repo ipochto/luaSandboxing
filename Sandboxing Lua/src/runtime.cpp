@@ -168,7 +168,7 @@ namespace lua
 				return nullptr;
 			}
 			void *newPtr = std::realloc(ptr, newSize);
-			
+
 			if (newPtr != nullptr) {
 				allocState->used = newUsed;
 			}
