@@ -1,7 +1,7 @@
 # Заметки на полях: Изолируем Lua окружение в C++ приложении.
 tags: c++, lua, gamedev, sol2
 
-Скриптовые языки уже давно и прочно заняли свою нишу в игрострое — они существенно упрощают описание игровой логики, уровней, ресурсов, диалогов, квестов, UI и чего только не. Что позволяет отдать эти задачи целиком и полностью в творческие руки гейм-/левел-/прочих-дизайнеров и других членов команды, которым не нужно обладать знаниями в том же C++. Разделение ответственности, ускорение разработки, облегчение моддинга ~~возможность, по завершению разработки самого движка, вышвырнуть программистов на мороз и стричь купоны на бесконечных дополнениях~~ — в общем, одни только плюсы. Да? 
+Скриптовые языки уже давно и прочно заняли свою нишу в игрострое — они существенно упрощают описание игровой логики, уровней, ресурсов, диалогов, квестов, UI и чего только не. Что позволяет отдать эти задачи целиком и полностью в творческие руки гейм-/левел-/прочих-дизайнеров и других членов команды, которым не нужно обладать знаниями в том же C++. Разделение ответственности, ускорение разработки, облегчение моддинга ~~возможность, по завершению разработки самого движка, вышвырнуть программистов на мороз и стричь купоны на бесконечных дополнениях~~ — в общем, одни только плюсы. Да?
 
 Да.
 
@@ -9,8 +9,8 @@ tags: c++, lua, gamedev, sol2
 
 В замечательном цикле статей "Game++" от @dalerank, а если быть конкретней, то в [Game++. while (!game(over))](https://habr.com/ru/articles/907146/) озвучена следующая мысль про скрипты в игровых движках, как раз на эту тему:
 
-> ***... на удивление, [скрипты — ] это про безопасность***  
-Скрипты обычно запускаются в изолированной среде. Это значит, что если моддер написал что-то странное — он сломает только свою миссию, а не всю игру. Можно ограничить доступ скриптам: дать им возможность работать только с теми объектами, которые тебе нужны. Настроить лимиты, интерпретировать исключения, и в крайнем случае — просто не запускать подозрительное. В плюсах такой гибкости не получишь. Там любой кривой плагин — это потенциальный краш.  
+> ***... на удивление, [скрипты — ] это про безопасность***
+Скрипты обычно запускаются в изолированной среде. Это значит, что если моддер написал что-то странное — он сломает только свою миссию, а не всю игру. Можно ограничить доступ скриптам: дать им возможность работать только с теми объектами, которые тебе нужны. Настроить лимиты, интерпретировать исключения, и в крайнем случае — просто не запускать подозрительное. В плюсах такой гибкости не получишь. Там любой кривой плагин — это потенциальный краш.
 
 Т.е. лечится.
 
@@ -34,7 +34,7 @@ tags: c++, lua, gamedev, sol2
 
 Для выполнения Lua-кода из нашего приложения необходимо создать для него окружение — фактически виртуальную машину, содержащую всё необходимое для запуска скриптов: стек, глобальные переменные, таблицы и функции, а также аллокатор и сборщик мусора. В терминологии Lua это называется **_state_** (состояние).
 
-Создание всего этого — задача, конечно, довольно нетривиальная. 
+Создание всего этого — задача, конечно, довольно нетривиальная.
 <details>
 <summary> И, в нашем случае, решается через... [развернуть]</summary>
 
@@ -143,7 +143,7 @@ b = engineAPI.sub(10, 20)
 
 В Lua таблицы — это единый и универсальный механизм данных и структурирования, на котором фактически строится вообще весь язык. Они могут хранить значения любого типа: числа, строки, другие таблицы и **функции**. И не просто могут — вообще все переменные, функции, библиотеки и модули являются именно элементами таблиц.
 
-Тип у Lua таблиц является ссылочным, т.е. когда мы присваиваем переменной или передаём в функцию какую-нибудь таблицу, копирования не происходит — присваивается и передаётся только ссылка. Если такая переменная выходит из области видимости или ей присваивается `nil` — ссылка обнуляется. А когда ссылок на нашу таблицу вообще не остаётся, она с чистой совестью выпиливается сборщиком мусора. Очевидно, что у нас должна быть какая-то главная таблица, не удаляемая сборщиком и в которой мы сможем создавать ссылки на новые. 
+Тип у Lua таблиц является ссылочным, т.е. когда мы присваиваем переменной или передаём в функцию какую-нибудь таблицу, копирования не происходит — присваивается и передаётся только ссылка. Если такая переменная выходит из области видимости или ей присваивается `nil` — ссылка обнуляется. А когда ссылок на нашу таблицу вообще не остаётся, она с чистой совестью выпиливается сборщиком мусора. Очевидно, что у нас должна быть какая-то главная таблица, не удаляемая сборщиком и в которой мы сможем создавать ссылки на новые.
 
 И вот тут создатели языка подошли с фантазией. Они сделали её неявной, т.е. она есть, и вы можете даже обратиться к ней по имени, но это совсем не обязательно. Вы можете спокойно писать на Lua, даже не подозревая о её существовании. Конечно, есть несколько сценариев, когда явное обращение таки потребуется, но это уже для тех, кто действительно знает, что делает.
 
@@ -248,7 +248,7 @@ sandbox["libname"] = lua["libname"];
 это — не копирование, а ссылка на объект. Поэтому, даже если мы хотим разрешить в песочнице библиотеку целиком, то всё равно придётся переносить её содержимое поэлементно, а не через проброс всей библиотечной таблицы.
 
 - Во-первых, библиотека может содержать какие-либо неявные, потенциально небезопасные поля, а Lua позволяет обойти их все простым перебором, даже не зная имён. Да, `_G` это, кстати, тоже касается.
-- Во-вторых, это как раз одна из тех самых возможностей нашкодить: доступ к корневой таблице библиотеки позволяет подменять её функции. В случае же поэлементного проброса подмена, конечно, тоже возможна, но это затронет только песочницу — испортится только ссылка на элемент, оставив саму библиотеку невредимой. 
+- Во-вторых, это как раз одна из тех самых возможностей нашкодить: доступ к корневой таблице библиотеки позволяет подменять её функции. В случае же поэлементного проброса подмена, конечно, тоже возможна, но это затронет только песочницу — испортится только ссылка на элемент, оставив саму библиотеку невредимой.
 
 Использование `sol::environment` открывает нам ещё несколько возможностей: например, на одном Lua-стейте делать сразу несколько независимых песочниц — хоть по отдельной на каждый запускаемый скрипт. Что существенно облегчает задачу по реализации обмена данными между песочницами. Или при сбросе песочницы _(например, перезапуск миссии)_ не нужно подгружать все библиотеки заново — мы просто заменяем таблицу-окружение на новую и копируем в неё разрешённые элементы. Ну и наконец, в случае необходимости, для доверенных скриптов в нашем распоряжении оказывается ещё и полнофункциональная версия Lua _(сам Lua-стейт)_. Последнее использовать с оговорками и осторожностью, но тем не менее, возможность такая есть.
 
@@ -318,14 +318,14 @@ class LuaRuntime : public sol::state
 public:
     sol::state state;
 
-	LuaRuntime() = default;
-	~LuaRuntime() = default;
+    LuaRuntime() = default;
+    ~LuaRuntime() = default;
 
     // Запрещаем копирование и перенос
-	LuaRuntime(const LuaRuntime &) = delete;
-	LuaRuntime(LuaRuntime &&) = delete;
-	LuaRuntime &operator=(const LuaRuntime &) = delete;
-	LuaRuntime &operator=(LuaRuntime &&) = delete;
+    LuaRuntime(const LuaRuntime &) = delete;
+    LuaRuntime(LuaRuntime &&) = delete;
+    LuaRuntime &operator=(const LuaRuntime &) = delete;
+    LuaRuntime &operator=(LuaRuntime &&) = delete;
 
     // Через это будем сообщать какие библиотеки нам понадобятся в песочнице,
     // и что их было бы неплохо загрузить в Lua-стейт
@@ -333,7 +333,7 @@ public:
     {
         if (!loadedLibs.contains(lib)) {
             state.open_libraries(lib);
-            loadedLibs.insert(lib);		
+            loadedLibs.insert(lib);
         }
     }
 
@@ -355,16 +355,16 @@ public:
     ~LuaSandbox() = default;
 
     // Аналогично — явно запрещаем копирование
-	LuaSandbox(const LuaSandbox &) = delete;
-	LuaSandbox &operator=(const LuaSandbox &) = delete;
-    
+    LuaSandbox(const LuaSandbox &) = delete;
+    LuaSandbox &operator=(const LuaSandbox &) = delete;
+
     // Но перенос оставим, чтобы наши песочницы можно было в контейнерах хранить
-	LuaSandbox(LuaSandbox &&) = default;
-	LuaSandbox &operator=(LuaSandbox &&) = default;    
+    LuaSandbox(LuaSandbox &&) = default;
+    LuaSandbox &operator=(LuaSandbox &&) = default;
 
     // Перегружаем [], чтобы снаружи был прозрачный доступ к элементам песочницы
     auto operator[](auto &&key) noexcept
-    { 
+    {
         return sandbox[std::forward<decltype(key)>(key)];
     }
 
@@ -418,7 +418,7 @@ private:
     };
     using LibsSandboxingRulesMap = std::map<sol::lib, LibSymbolsRules>;
 
-	static const LibsSandboxingRulesMap libsSandboxingRules;
+    static const LibsSandboxingRulesMap libsSandboxingRules;
     ...
 };
 
@@ -433,7 +433,7 @@ LuaSandbox::libsSandboxingRules{
     {sol::lib::math,
         {.allowedAllExceptRestricted = true,
          .restricted = {"random", "randomseed"}}},
-    {sol::lib::os, 
+    {sol::lib::os,
         {.allowed = {"clock", "difftime", "time"}}},
     {sol::lib::string,
         {.allowedAllExceptRestricted = true,
@@ -460,55 +460,55 @@ LuaSandbox::libsSandboxingRules{
 Так как мы оперируем библиотеками как `sol::lib`, то нам понадобится хелпер для получения реального Lua-имени:
 ```cpp
 // Заведём отдельный неймспейс для всякого рода вспомогательных функций.
-namespace lua   
+namespace lua
 {
     namespace details
     {
-		struct LibName
-		{
-			sol::lib lib;
-			std::string_view name;
-		};
-		constexpr auto libsNames = std::to_array({
-			{sol::lib::base,      "base"},
-			{sol::lib::bit32,     "bit32"},     // Lua 5.2 only
-			{sol::lib::coroutine, "coroutine"},
-			{sol::lib::debug,     "debug"},
-			{sol::lib::ffi,       "ffi"},       // LuaJIT only
-			{sol::lib::io,        "io"},
-			{sol::lib::jit,       "jit"},       // LuaJIT only
-			{sol::lib::math,      "math"},
-			{sol::lib::os,        "os"},
-			{sol::lib::package,   "package"},
-			{sol::lib::string,    "string"},
-			{sol::lib::table,     "table"},
-			{sol::lib::utf8,      "utf8"}       // Lua 5.3+
-		});
+        struct LibName
+        {
+            sol::lib lib;
+            std::string_view name;
+        };
+        constexpr auto libsNames = std::to_array({
+            {sol::lib::base,      "base"},
+            {sol::lib::bit32,     "bit32"},     // Lua 5.2 only
+            {sol::lib::coroutine, "coroutine"},
+            {sol::lib::debug,     "debug"},
+            {sol::lib::ffi,       "ffi"},       // LuaJIT only
+            {sol::lib::io,        "io"},
+            {sol::lib::jit,       "jit"},       // LuaJIT only
+            {sol::lib::math,      "math"},
+            {sol::lib::os,        "os"},
+            {sol::lib::package,   "package"},
+            {sol::lib::string,    "string"},
+            {sol::lib::table,     "table"},
+            {sol::lib::utf8,      "utf8"}       // Lua 5.3+
+        });
     } // namespace details
 
     // Собственно сам хелпер.
-	constexpr auto libName(sol::lib lib) noexcept -> std::optional<std::string_view>
-	{
-		auto findLib = [lib](auto &lookup) -> bool { return lookup.lib == lib; };
-		
-		const auto &libs = lua::details::libsNames;
-		if (auto it = ranges::find_if(libs, findLib); it != libs.end()) {
-			return it->name;
-		}
-		return std::nullopt;
-	}
+    constexpr auto libName(sol::lib lib) noexcept -> std::optional<std::string_view>
+    {
+        auto findLib = [lib](auto &lookup) -> bool { return lookup.lib == lib; };
+
+        const auto &libs = lua::details::libsNames;
+        if (auto it = ranges::find_if(libs, findLib); it != libs.end()) {
+            return it->name;
+        }
+        return std::nullopt;
+    }
 
     // Ну и чтобы два раза не вставать, сразу добавим обратный.
-	constexpr auto libByName(std::string_view libName) noexcept -> std::optional<sol::lib>
-	{
-		auto findLibName = [libName](auto &lookup) -> bool { return lookup.name == libName; };
+    constexpr auto libByName(std::string_view libName) noexcept -> std::optional<sol::lib>
+    {
+        auto findLibName = [libName](auto &lookup) -> bool { return lookup.name == libName; };
 
-		const auto &libs = lua::details::libsNames;
-		if (auto it = ranges::find_if(libs, findLibName); it != libs.end()) {
-			return it->lib;
-		}
-		return std::nullopt;
-	}
+        const auto &libs = lua::details::libsNames;
+        if (auto it = ranges::find_if(libs, findLibName); it != libs.end()) {
+            return it->lib;
+        }
+        return std::nullopt;
+    }
 } // namespace lua
 ```
 Ну и наконец, сам загрузчик:
@@ -523,54 +523,54 @@ private:
 
 void LuaSandbox::copyLibFromState(sol::lib lib, const LibSymbolsRules &rules)
 {
-	// Определяемся с именем таблицы, где обитает запрошенная библиотека.
+    // Определяемся с именем таблицы, где обитает запрошенная библиотека.
     const auto libLookupName = lua::libLookupName(lib);
-	if (libLookupName.empty()) {
-		return;
-	}
+    if (libLookupName.empty()) {
+        return;
+    }
     // Копировать будем отсюда,
-	const sol::table src = runtime->state[libLookupName]; 
+    const sol::table src = runtime->state[libLookupName];
 
     // проверив, на всякий случай, что таблица таки существует.
     if (!src.valid()) {
-		return;
-	}
+        return;
+    }
 
     // Функции из 'base' заливаются прямо в '_G', который у нас уже есть,
     // для остальных же библиотек придётся создать свои таблицы для копирования.
-	if (lib != sol::lib::base) {
-		sandbox[libLookupName] = sol::table(runtime->state, sol::create);
-	}
+    if (lib != sol::lib::base) {
+        sandbox[libLookupName] = sol::table(runtime->state, sol::create);
+    }
     // Сюда.
-	sol::table dst = sandbox[libLookupName];
+    sol::table dst = sandbox[libLookupName];
 
     // Ну и, собственно, то, к чему мы так долго и тернисто шли — заливаем в песочницу,
     if (rules.allowedAllExceptRestricted) {
         // копируя вообще всё содержимое поэлементно,
-		for (const auto &[name, object] : src) {
-			dst[name] = object;
-		}
+        for (const auto &[name, object] : src) {
+            dst[name] = object;
+        }
         // и удаляя запрещёнку.
-		for (const auto &name : rules.restricted) {
-			dst[name] = sol::nil;
-		}
-	} else { // Ну или, в случае белого списка,
+        for (const auto &name : rules.restricted) {
+            dst[name] = sol::nil;
+        }
+    } else { // Ну или, в случае белого списка,
         // просто грузим только разрешённое.
-		for (const auto &name : rules.allowed) {
-			dst[name] = src[name];
-		}
-	}
+        for (const auto &name : rules.allowed) {
+            dst[name] = src[name];
+        }
+    }
 }
 
 // И чуть не забытый хелпер
 namespace lua
 {
     // для определения имени таблицы — местоположения библиотеки внутри Lua-стейта.
-	constexpr auto libLookupName(sol::lib lib) -> std::string_view
-	{
-		// Функции из `base` сидят прямо в "корне" — '_G', в отличие от остальных библиотек.
+    constexpr auto libLookupName(sol::lib lib) -> std::string_view
+    {
+        // Функции из `base` сидят прямо в "корне" — '_G', в отличие от остальных библиотек.
         return (lib == sol::lib::base) ? "_G" : lua::libName(lib).value_or("");
-	}
+    }
 }  // namespace lua
 ```
 И завершаем картину с библиотеками последними штрихами — интерфейс для их загрузки:
@@ -579,8 +579,8 @@ namespace lua
 // он позволяет выразить синоним для "Какой-нибудь итерируемый контейнер с sol::lib внутри"
 template <typename T>
 concept SolLibContainer =
-	std::ranges::range<T> 
-	&& std::same_as<std::ranges::range_value_t<T>, sol::lib>;
+    std::ranges::range<T>
+    && std::same_as<std::ranges::range_value_t<T>, sol::lib>;
 
 // Благодаря чему, мы сможем почти из любого контейнера грузить библиотеки сразу пачкой.
 void LuaSandbox::loadLibs(const SolLibContainer auto &libs)
@@ -678,7 +678,7 @@ using opt_cref = optional_ref<const T>;
 
 ## Все животные равны, но некоторые равнее.
 
-Вспоминаем про нашу паранойю и позволим создавать песочницы только по заранее заданным шаблонам, ограничивающим список загружаемых библиотек. 
+Вспоминаем про нашу паранойю и позволим создавать песочницы только по заранее заданным шаблонам, ограничивающим список загружаемых библиотек.
 
 Отдельно выделим шаблон `Custom`, для которого, мало того, что весь список библиотек доступен, так ещё и позволяем загружать их по мере необходимости, а не в момент создания песочницы.
 
@@ -734,7 +734,7 @@ void LuaSandbox::reset(bool doCollectGrbg /* = false */)
     sandbox = sol::environment(lua->state, sol::create);
     sandbox["_G"] = sandbox;
 
-    if (loadedLibs.empty()) { 
+    if (loadedLibs.empty()) {
         // Для конструктора используем список из пресета.
         loadLibs(sandboxPresets.at(preset));
     } else {
@@ -748,7 +748,7 @@ void LuaSandbox::reset(bool doCollectGrbg /* = false */)
 }
 ```
 
-С основным, вроде разобрались. Что у нас там дальше по списку? 
+С основным, вроде разобрались. Что у нас там дальше по списку?
 
 ## Разделяй и властвуй
 
@@ -787,7 +787,7 @@ void LuaSandbox::reset(bool doCollectGrbg /* = false */)
 
 Теперь нюансы, касающиеся самих путей.
 
-Первое: `dofile` принимает как абсолютные, так и относительные пути. Причём если с абсолютными всё понятно, то с относительными не всё так однозначно — они интерпретируются не относительно текущего файла или директории скрипта, а относительно текущего рабочего каталога **процесса**. Поэтому, если предполагается хоть какая-то иерархическая организация файлов скриптов, то нам придётся для каждого вызываемого скрипта указывать полный путь к нему. 
+Первое: `dofile` принимает как абсолютные, так и относительные пути. Причём если с абсолютными всё понятно, то с относительными не всё так однозначно — они интерпретируются не относительно текущего файла или директории скрипта, а относительно текущего рабочего каталога **процесса**. Поэтому, если предполагается хоть какая-то иерархическая организация файлов скриптов, то нам придётся для каждого вызываемого скрипта указывать полный путь к нему.
 
 Следовательно, для песочниц нам нужно задать:
 - Корневую директорию, от которой будут интерпретироваться относительные пути.
@@ -802,20 +802,20 @@ class LuaSandbox
 {
 public:
     ...
-    
+
     using Paths = std::vector<fs::path>;
 
     // Дополняем конструктор:
-	explicit LuaSandbox(LuaRuntime &runtime,
-						Presets preset,
-						const fs::path &root = {},
-						const Paths &allowedPaths = {})
-		: runtime(&runtime),
-		  preset(preset)
-	{
-		setPathsForScripts(root, allowedPaths);
-		reset();
-	}
+    explicit LuaSandbox(LuaRuntime &runtime,
+                        Presets preset,
+                        const fs::path &root = {},
+                        const Paths &allowedPaths = {})
+        : runtime(&runtime),
+          preset(preset)
+    {
+        setPathsForScripts(root, allowedPaths);
+        reset();
+    }
 
     void allowScriptPath(const fs::path &path); // Добавляет путь к списку разрешённых
     ...
@@ -824,8 +824,8 @@ private:
     void setPathsForScripts(const fs::path &root, const Paths &allowed);
 
     fs::path scriptsRoot{}; // Содержит абсолютный, лексически нормализованный базовый путь.
-                            // Именно отсюда рассчитываются относительные пути скриптов 
-							// Если же не задан, то вообще запрещаем запуск файлов
+                            // Именно отсюда рассчитываются относительные пути скриптов
+                            // Если же не задан, то вообще запрещаем запуск файлов
 
     Paths allowedScriptPaths{}; // Допускаем как относительные, так и абсолютные пути
     ...
@@ -833,26 +833,26 @@ private:
 
 void LuaSandbox::allowScriptPath(const fs::path &path)
 {
-	if (scriptsRoot.empty() || path.empty()) {
-		return;
-	}
+    if (scriptsRoot.empty() || path.empty()) {
+        return;
+    }
     const auto allow = path.is_relative() ? scriptsRoot / path : path;
-	allowedScriptPaths.push_back(fs_utils::normalize(allow));
+    allowedScriptPaths.push_back(fs_utils::normalize(allow));
 }
 
 void LuaSandbox::setPathsForScripts(const fs::path &root, const Paths &allowed)
 {
-	if (root.empty() || root.is_relative()) {
-		scriptsRoot.clear();
-		allowedScriptPaths.clear();
-		return;
-	}
-	scriptsRoot = fs_utils::normalize(root);
+    if (root.empty() || root.is_relative()) {
+        scriptsRoot.clear();
+        allowedScriptPaths.clear();
+        return;
+    }
+    scriptsRoot = fs_utils::normalize(root);
 
-	allowedScriptPaths.clear();
-	for (const auto &path : allowed) {
-		allowScriptPath(path);
-	}
+    allowedScriptPaths.clear();
+    for (const auto &path : allowed) {
+        allowScriptPath(path);
+    }
 }
 ```
 `fs_utils::normalize` в представленном коде — это ещё один хелпер, на сей раз уже для работы с путями. Точнее, `fs_utils` — это неймспейс с несколькими такими утилитами. В силу того, что они лишь косвенно связаны с обсуждаемой темой, подробно останавливаться на этом не будем.
@@ -865,46 +865,46 @@ namespace fs = std::filesystem;
 
 // Опять же — изящно и непринуждённо объявляем синоним для "любой контейнер с путями"
 template <typename T>
-concept fsPaths = 
-	std::ranges::range<T>
-	&& std::same_as<std::remove_cvref_t<std::ranges::range_value_t<T>>, fs::path>;
+concept fsPaths =
+    std::ranges::range<T>
+    && std::same_as<std::remove_cvref_t<std::ranges::range_value_t<T>>, fs::path>;
 
 namespace fs_utils
 {
-	inline auto normalize(const fs::path &path) -> fs::path
-	{
-		auto result = path.lexically_normal();
-		if (result.native().ends_with(fs::path::preferred_separator)) {
-			return result.parent_path();
-		}
-		return result;
-	}
+    inline auto normalize(const fs::path &path) -> fs::path
+    {
+        auto result = path.lexically_normal();
+        if (result.native().ends_with(fs::path::preferred_separator)) {
+            return result.parent_path();
+        }
+        return result;
+    }
 
     // Проверяет, что path находится внутри root
-	inline bool startsWith(const fs::path &path, const fs::path &root)
-	{
-		if (root.empty()) {
-			return false;
-		}
-		const auto rootNorm = normalize(fs::absolute(root));
-		const auto pathNorm = normalize(fs::absolute(path));
-		const auto [rootEnd, _] = std::ranges::mismatch(rootNorm, pathNorm);
-		return rootEnd == rootNorm.end();
-	}
+    inline bool startsWith(const fs::path &path, const fs::path &root)
+    {
+        if (root.empty()) {
+            return false;
+        }
+        const auto rootNorm = normalize(fs::absolute(root));
+        const auto pathNorm = normalize(fs::absolute(path));
+        const auto [rootEnd, _] = std::ranges::mismatch(rootNorm, pathNorm);
+        return rootEnd == rootNorm.end();
+    }
 
     // Проверяет, что path находится внутри одного из roots
-	inline bool startsWith(const fs::path &path, const fsPaths auto &roots)
-	{
-		if (roots.empty()) {
-			return false;
-		}
-		for (const auto &root : roots) {
-			if (startsWith(path, root)) {
-				return true;
-			}
-		}
-		return false;
-	}
+    inline bool startsWith(const fs::path &path, const fsPaths auto &roots)
+    {
+        if (roots.empty()) {
+            return false;
+        }
+        for (const auto &root : roots) {
+            if (startsWith(path, root)) {
+                return true;
+            }
+        }
+        return false;
+    }
 } // namespace fs_utils
 ```
 </details>
@@ -938,21 +938,21 @@ auto LuaSandbox::runFile(const fs::path &scriptFile)
 {
     // Вручную формируем "ошибочный" результат, содержащий текст сообщение об ошибке
     // Поясниения будут ниже
-	auto error = [this, &scriptFile](std::string_view msg) {
-		const auto errMsg = std::format("{}: {}", msg, scriptFile.string());
-		return lua::makeFnCallResult(runtime->state, errMsg, sol::call_status::file);
-	};
+    auto error = [this, &scriptFile](std::string_view msg) {
+        const auto errMsg = std::format("{}: {}", msg, scriptFile.string());
+        return lua::makeFnCallResult(runtime->state, errMsg, sol::call_status::file);
+    };
 
-	if (!fs::exists(scriptFile)) {
-		return error("Attempting to run a non-existent script");
-	}
-	if (!isPathAllowed(scriptFile)) {
-		return error("Attempting to run a script outside the allowed path");
-	}
-	if (lua::isBytecode(scriptFile)) {
-		return error("Attempting to run precompiled Lua bytecode");
-	}
-	return runtime->state.safe_script_file(scriptFile, sandbox);
+    if (!fs::exists(scriptFile)) {
+        return error("Attempting to run a non-existent script");
+    }
+    if (!isPathAllowed(scriptFile)) {
+        return error("Attempting to run a script outside the allowed path");
+    }
+    if (lua::isBytecode(scriptFile)) {
+        return error("Attempting to run precompiled Lua bytecode");
+    }
+    return runtime->state.safe_script_file(scriptFile, sandbox);
 }
 ```
 С `fs::exists` всё понятно — функция стандартная, проверяет существование файла или самой директории.
@@ -984,38 +984,38 @@ private:
 ```cpp
 namespace lua
 {
-	bool isBytecode(const fs::path &file)
-	{
-		constexpr auto signature = std::string_view(LUA_SIGNATURE);
+    bool isBytecode(const fs::path &file)
+    {
+        constexpr auto signature = std::string_view(LUA_SIGNATURE);
 
-		auto ifs = std::ifstream(file, std::ios::binary);
-		if (!ifs) {
-			return false;
-		}
-		auto header = std::array<char, signature.size()>{};
-		ifs.read(header.data(), header.size());
-		if (ifs.gcount() < static_cast<std::streamsize>(header.size())) {
-			return false;
-		}
-		return ranges::equal(header, signature);
-	}
+        auto ifs = std::ifstream(file, std::ios::binary);
+        if (!ifs) {
+            return false;
+        }
+        auto header = std::array<char, signature.size()>{};
+        ifs.read(header.data(), header.size());
+        if (ifs.gcount() < static_cast<std::streamsize>(header.size())) {
+            return false;
+        }
+        return ranges::equal(header, signature);
+    }
 ```
 
 Для формирования же корректного возвращаемого объекта `sol::protected_function_result`, нам нужно:
  1. В случае успешного выполнения функции поместить в стек — возвращаемый функцией Lua-объект, будь то значение, таблица, функция или `nil`;
- 2. Или же, в случае ошибки, вместо результата пушим в стек соответствующее ей сообщение; 
+ 2. Или же, в случае ошибки, вместо результата пушим в стек соответствующее ей сообщение;
  3. И, наконец, создаём объект `sol::protected_function_result` с указанием статуса результата — валидный, который можно использовать дальше, или же — ошибка, которую нужно обработать. Здесь же указываем количество объектов, которое поместили в стек _(да, их может быть несколько, но в нашем случае используем только один)_, эта информация в т.ч. нужна деструктору `sol::protected_function_result` для того, чтобы подчистить стек за собой, но это уже нюансы реализации `sol2`, не будем углубляться.
 
 ```cpp
-	auto makeFnCallResult(sol::state &lua,
-						  const auto &object,
-						  sol::call_status callStatus = sol::call_status::ok)
-		-> sol::protected_function_result
-	{
-		bool isResultValid = callStatus == sol::call_status::ok;
-		sol::stack::push(lua, object);
-		return sol::protected_function_result(lua, -1, isResultValid ? 1 : 0, 1, callStatus);
-	}
+    auto makeFnCallResult(sol::state &lua,
+                          const auto &object,
+                          sol::call_status callStatus = sol::call_status::ok)
+        -> sol::protected_function_result
+    {
+        bool isResultValid = callStatus == sol::call_status::ok;
+        sol::stack::push(lua, object);
+        return sol::protected_function_result(lua, -1, isResultValid ? 1 : 0, 1, callStatus);
+    }
 } // namespace lua
 ```
 
@@ -1025,26 +1025,26 @@ namespace lua
 auto LuaSandbox::dofileReplace(sol::stack_object fileName)
     -> sol::protected_function_result
 {
-	auto nil = [this]() { return lua::makeFnCallResult(runtime->state, sol::nil); };
+    auto nil = [this]() { return lua::makeFnCallResult(runtime->state, sol::nil); };
 
-	if (!fileName.is<std::string>()) {
-		return nil();
-	}
-	const auto filePath = toScriptPath(fileName.as<std::string>());
-	if (auto result = runFile(filePath); result.valid()) {
-		return result;
-	}
-	return nil();
+    if (!fileName.is<std::string>()) {
+        return nil();
+    }
+    const auto filePath = toScriptPath(fileName.as<std::string>());
+    if (auto result = runFile(filePath); result.valid()) {
+        return result;
+    }
+    return nil();
 }
 
 auto LuaSandbox::toScriptPath(const std::string &fileName) const
     -> fs::path
 {
-	auto scriptPath = fs::path(fileName);
-	if (scriptPath.is_relative()) {
-		scriptPath = scriptsRoot / scriptPath;
-	}
-	return scriptPath.lexically_normal();
+    auto scriptPath = fs::path(fileName);
+    if (scriptPath.is_relative()) {
+        scriptPath = scriptsRoot / scriptPath;
+    }
+    return scriptPath.lexically_normal();
 }
 ```
 
@@ -1054,18 +1054,18 @@ auto LuaSandbox::toScriptPath(const std::string &fileName) const
 auto LuaSandbox::requireReplace(sol::stack_object target)
     -> sol::protected_function_result
 {
-	auto nil = [this]() { return lua::makeFnCallResult(runtime->state, sol::nil); };
+    auto nil = [this]() { return lua::makeFnCallResult(runtime->state, sol::nil); };
 
-	if (!target.is<std::string>()) {
-		return nil();
-	}
-	const auto possibleLibName = target.as<std::string>();
-	if (const auto lib = lua::libByName(possibleLibName); lib.has_value()) {
-		if (require(*lib)) { // Все проверки на допустимость у нас там уже реализованы
-			const auto libLookupName = lua::libLookupName(*lib);
-			return lua::makeFnCallResult(runtime->state, sandbox[libLookupName]);
-		}
-	}
+    if (!target.is<std::string>()) {
+        return nil();
+    }
+    const auto possibleLibName = target.as<std::string>();
+    if (const auto lib = lua::libByName(possibleLibName); lib.has_value()) {
+        if (require(*lib)) { // Все проверки на допустимость у нас там уже реализованы
+            const auto libLookupName = lua::libLookupName(*lib);
+            return lua::makeFnCallResult(runtime->state, sandbox[libLookupName]);
+        }
+    }
     return nil();
 }
 ```
@@ -1078,18 +1078,18 @@ class LuaSandbox
     ...
 private:
 
-	auto dofileReplace(sol::stack_object fileName) -> sol::protected_function_result;
-	auto requireReplace(sol::stack_object target) -> sol::protected_function_result;
+    auto dofileReplace(sol::stack_object fileName) -> sol::protected_function_result;
+    auto requireReplace(sol::stack_object target) -> sol::protected_function_result;
 
     void loadSafeExternalScriptFilesRoutine()
     {
         sandbox.set_function("dofile", &LuaSandbox::dofileReplace, this);
         sandbox.set_function("require", &LuaSandbox::requireReplace, this);
-    }    
+    }
 
-	auto toScriptPath(const std::string &fileName) const -> fs::path;
+    auto toScriptPath(const std::string &fileName) const -> fs::path;
 
-	bool isPathAllowed(const fs::path &scriptFile) const;
+    bool isPathAllowed(const fs::path &scriptFile) const;
     ...
 };
 ```
@@ -1102,15 +1102,15 @@ private:
 ```cpp
 void LuaSandbox::printReplace(sol::variadic_args args)
 {
-	std::string result;
-	for (auto &&arg : args) {
-		result += lua::toString(arg);
+    std::string result;
+    for (auto &&arg : args) {
+        result += lua::toString(arg);
         result += " "; // родной print все аргументы разделяет пробелами
-	}
-	if (!result.empty()) {
-		result.pop_back(); // удаляем лишний пробел в конце
-	}
-	*printOutStrm << "[lua sandbox]:> " << result << "\n";
+    }
+    if (!result.empty()) {
+        result.pop_back(); // удаляем лишний пробел в конце
+    }
+    *printOutStrm << "[lua sandbox]:> " << result << "\n";
 }
 ```
 Для сохранения логики работы оригинального `print` — а он мало того, что сам корректно конвертирует числа, так ещё и для таблиц и функций, полученных в качестве аргументов, даст строки вида `table: 0x12345` / `function: 0x...` — нам придётся задействовать стандартный `tostring` из `sol::lib::base`. Причём в саму песочницу его грузить не нужно — достаточно того, чтобы он присутствовал в Lua-стейте:
@@ -1118,14 +1118,14 @@ void LuaSandbox::printReplace(sol::variadic_args args)
 ```cpp
 namespace lua
 {
-	auto toString(const sol::object &obj) -> std::string
-	{
-		sol::state_view lua(obj.lua_state());
-		if (!lua["tostring"].valid()) {
-			return {};
-		}
-		return lua["tostring"](obj).get<std::string>();
-	}
+    auto toString(const sol::object &obj) -> std::string
+    {
+        sol::state_view lua(obj.lua_state());
+        if (!lua["tostring"].valid()) {
+            return {};
+        }
+        return lua["tostring"](obj).get<std::string>();
+    }
 } // namespace lua
 ```
 Объявляем:
@@ -1134,26 +1134,26 @@ class LuaSandbox
 {
 public:
     ...
-	explicit LuaSandbox(LuaRuntime &runtime,
-						Presets preset,
-						const fs::path &root = {},
-						const Paths &allowedPaths = {},
-						std::ostream &printOutStrm = std::cout)  // По умолчанию оставляем `stdout`
-		: runtime(&runtime),
-		  preset(preset),
-		  printOutStrm(&printOutStrm)
-	{...}
+    explicit LuaSandbox(LuaRuntime &runtime,
+                        Presets preset,
+                        const fs::path &root = {},
+                        const Paths &allowedPaths = {},
+                        std::ostream &printOutStrm = std::cout)  // По умолчанию оставляем `stdout`
+        : runtime(&runtime),
+          preset(preset),
+          printOutStrm(&printOutStrm)
+    {...}
 
     ...
 
 private:
     void printReplace(sol::variadic_args args);
 
-	void loadSafePrint()
+    void loadSafePrint()
     {
-    	// В Lua-стейт должна быть загружена библиотека base, чтобы tostring работал
+        // В Lua-стейт должна быть загружена библиотека base, чтобы tostring работал
         runtime->require(sol::lib::base);
-	    sandbox.set_function("print", &LuaSandbox::printReplace, this);
+        sandbox.set_function("print", &LuaSandbox::printReplace, this);
     }
     ...
 
@@ -1193,7 +1193,7 @@ function getBooze(rawMaterials)
     local barrel = getBarrel();
 
     for i = #rawMaterials,1,-1 do
-        local item = table.remove(rawMaterials) 
+        local item = table.remove(rawMaterials)
         barrel.put(item)
     end
 
@@ -1285,7 +1285,7 @@ namespace lua
             // Ну и несколько вспомогательных методов:
             bool isActivated() const { return used > 0; }
             bool isLimitEnabled() const { return limit > 0; }
-            void disableLimit() { limit = 0; };            
+            void disableLimit() { limit = 0; };
         };
 
         void *limitedAlloc(void *ud, void *ptr, size_t currSize, size_t newSize) noexcept
@@ -1337,7 +1337,7 @@ namespace lua
 } // namespace lua
 
 ```
-Ну а подружить с `Luaruntime` — это уже совсем тривиальная задача. 
+Ну а подружить с `Luaruntime` — это уже совсем тривиальная задача.
 ```cpp
 class LuaRuntime
 {
@@ -1365,7 +1365,7 @@ public:
         if (allocatorState.isActivated()) {
             // Т.к. и для старого и для нового sol::state у нас allocatorState один и тот же,
             // причём сначала создастся новый и только потом буден удалён старый, то
-            // в теории возможен выход за пределы установленного лимита. Поэтому просто 
+            // в теории возможен выход за пределы установленного лимита. Поэтому просто
             // отключим лимит на время этих телодвижений.
 
             const auto currentLimit = allocatorState.limit; // Сохраняем для нового стейта
@@ -1390,7 +1390,7 @@ public:
             allocatorState.limit = limit;
         }
         return allocatorState.isActivated();
-    }    
+    }
     ...
 };
 ```
@@ -1402,7 +1402,7 @@ public:
 
 ## Что пока не охвачено данной реализацией.
 
-1. Защита от зависаний на стороне lua-скриптов: решается через хуки и таймауты — если скрипт выполняется дольше чем разрешено таймаутом, то скрипт просто прибивается. Да, это не решает проблему неработоспособности скрипта, но, по крайней мере, даёт возможность нашему движку отработать ошибку и работать дальше, не вылетев из-за кривого мода/карты. 
+1. Защита от зависаний на стороне lua-скриптов: решается через хуки и таймауты — если скрипт выполняется дольше чем разрешено таймаутом, то скрипт просто прибивается. Да, это не решает проблему неработоспособности скрипта, но, по крайней мере, даёт возможность нашему движку отработать ошибку и работать дальше, не вылетев из-за кривого мода/карты.
 2. Механизм контроля целостности доверенных скриптов — например, скриптов, поставляемых нами самими. Со скриптами модов пользователь может делать что угодно, но для гарантированной работоспособности движка родные скрипты трогать не стоит.
 3. Hotreload — по факту изменения.
 
