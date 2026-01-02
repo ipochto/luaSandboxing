@@ -144,7 +144,6 @@ namespace lua
 				assert((allocState != nullptr) && "Pointer to the allocator state must be provided.");
 				return nullptr;
 			}
-
 			if (ptr == nullptr) {
 				currSize = 0;
 			}
@@ -158,27 +157,18 @@ namespace lua
 			}
 			const size_t usedBase = (allocState->used >= currSize) ? allocState->used - currSize
 																   : 0;
-
 			if (newSize > (std::numeric_limits<size_t>::max() - usedBase)) {
-				spdlog::error("Lua allocator: arithmetic overflow while computing memory usage "
-							  "[used: {}, requested more for: {}, size_t max: {}]",
-							  usedBase,
-							  newSize,
-							  std::numeric_limits<size_t>::max());
 				allocState->overflow = true;
 				return nullptr;
 			}
 			const size_t newUsed = usedBase + newSize;
-			if (newUsed > allocState->limit) {
-				spdlog::error("Lua allocator: memory limit reached "
-							  "[limit: {}, used: {}, requested total: {}]",
-							  allocState->limit,
-							  allocState->used,
-							  newUsed);
+
+			if (allocState->isLimitEnabled() && newUsed > allocState->limit) {
 				allocState->limitReached = true;
 				return nullptr;
 			}
 			void *newPtr = std::realloc(ptr, newSize);
+			
 			if (newPtr != nullptr) {
 				allocState->used = newUsed;
 			}
@@ -186,6 +176,36 @@ namespace lua
 		}
 	} // namespace memory
 } // namespace lua
+
+void LuaRuntime::reset()
+{
+	if (allocatorState.isActivated()) {
+		const auto currentLimit = allocatorState.limit;
+		allocatorState.disableLimit();
+
+		state = sol::state(sol::default_at_panic, lua::memory::limitedAlloc, &allocatorState);
+
+		allocatorState = {.used = allocatorState.used, .limit = currentLimit};
+	} else {
+		state = sol::state();
+	}
+}
+
+bool LuaRuntime::setMemoryLimit(size_t limit)
+{
+	if (allocatorState.isActivated()) {
+		allocatorState.limit = limit;
+	}
+	return allocatorState.isActivated();
+}
+
+void LuaRuntime::require(sol::lib lib)
+{
+	if (!loadedLibs.contains(lib)) {
+		state.open_libraries(lib);
+		loadedLibs.insert(lib);
+	}
+}
 
 void LuaSandbox::reset(bool doCollectGrbg /* = false */)
 {
