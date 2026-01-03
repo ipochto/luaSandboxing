@@ -1285,7 +1285,7 @@ namespace lua
             // Ну и несколько вспомогательных методов:
             bool isActivated() const { return used > 0; }
             bool isLimitEnabled() const { return limit > 0; }
-            void disableLimit() { limit = 0; };
+            void disableLimit() { limit = 0; }
         };
 
         void *limitedAlloc(void *ud, void *ptr, size_t currSize, size_t newSize) noexcept
@@ -1356,7 +1356,7 @@ public:
     // и теперь можем создавать рантаймы с поддержкой лимитов на память
     LuaRuntime(size_t memoryLimit)
         : allocatorState({.limit = memoryLimit}),
-        state(sol::default_at_panic, lua::memory::limitedAlloc, &allocatorState)
+          state(sol::default_at_panic, lua::memory::limitedAlloc, &allocatorState)
     {}
 
     // Чтобы не возвращаться к этому вопросу позже - сразу реализуем возможность сброса lua-стейта
@@ -1394,7 +1394,49 @@ public:
     ...
 };
 ```
+Теперь Lua, получив вместо запрошенного куска памяти неожиданный `nullptr`, сгенерирует соответствующую ошибку.
+А стандартный способ их перехвата — это проверка результата выполнения скрипта:
+```cpp
+LuaRuntime lua(16'384); // 16 Kb
+LuaSandbox sandbox(lua, LuaSandbox::Presets::Minimal);
 
+// Здесь с тем же успехом мог быть вызов через sandbox.runFile()
+auto result = sandbox.run(R"(
+    chalkboard = {}
+    while true do
+        table.insert(chalkboard, "I will not waste chalk")
+    end
+)");
+
+if (!result.valid()) {
+    sol::error error = result;
+    std::cout << std::format("Script execution resulted in the following error: \"{}\"\n",
+                             error.what());
+    // -> Script execution resulted in the following error: "sol: memory error: not enough memory"
+}
+```
+Точнее — один из стандартных способов, но наиболее подходящий для нас, т.к. альтернатива — это исключения, которыми код `sol2` обмазан более чем достаточно, и в нашем случае их хотелось бы избежать _(ну геймдев же, ну) Ⓒ_.
+
+Так вот, чтобы получить такое поведение, нам необходимо явно запретить все исключения `sol2`.
+
+Помните я в начале говорил о том, что для подключения Lua к нашему C++ проекту достаточно одного заголовочного файла?
+Я немного упростил. На самом деле нам придётся ещё задать несколько опций для конфигурации `sol2`, но на том этапе это была избыточная информация. Теперь можно )
+
+```cpp
+#define SOL_ALL_SAFETIES_ON 1   // Включает все доступные в sol2 механизмы безопасности,
+                                // в т.ч. частично заменяет выброс исключений в случае 
+                                // возникновения ошибок Lua на возврат самих ошибок
+                                // в виде sol::protected_function_result.
+
+#define SOL_NO_EXCEPTIONS 1     // Отключаем вообще все исключения внутри sol2
+#define SOL_LUA_VERSION 501     // Явно указываем используемую версию Lua
+
+#include <sol/sol.hpp> // И только потом подключаем сам заголовочный файл
+
+```
+Предлагаю на тему аллокаторов на этом закруглиться, а то мы так сейчас и до перехода на `mimalloc`/`jemalloc`/`tcmalloc` договоримся... Что, кстати, далеко не лишено смысла.
+
+---
 
 Код в удобоваримой форме можно посмотреть [здесь](https://github.com/ipochto/articles/tree/master/Sandboxing%20Lua/src)
 
@@ -1405,4 +1447,3 @@ public:
 1. Защита от зависаний на стороне lua-скриптов: решается через хуки и таймауты — если скрипт выполняется дольше чем разрешено таймаутом, то скрипт просто прибивается. Да, это не решает проблему неработоспособности скрипта, но, по крайней мере, даёт возможность нашему движку отработать ошибку и работать дальше, не вылетев из-за кривого мода/карты.
 2. Механизм контроля целостности доверенных скриптов — например, скриптов, поставляемых нами самими. Со скриптами модов пользователь может делать что угодно, но для гарантированной работоспособности движка родные скрипты трогать не стоит.
 3. Hotreload — по факту изменения.
-
