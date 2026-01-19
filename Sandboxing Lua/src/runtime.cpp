@@ -362,13 +362,10 @@ void LuaSandbox::allowScriptPath(const fs::path &path)
 
 void LuaSandbox::setPathsForScripts(const fs::path &root, const Paths &allowed)
 {
-	if (root.empty() || root.is_relative()) {
-		scriptsRoot.clear();
-		allowedScriptPaths.clear();
-		return;
+	scriptsRoot.clear();
+	if (!root.empty() && root.is_absolute()) {
+		scriptsRoot = fs_utils::normalize(root);
 	}
-	scriptsRoot = fs_utils::normalize(root);
-
 	allowedScriptPaths.clear();
 	for (const auto &path : allowed) {
 		allowScriptPath(path);
