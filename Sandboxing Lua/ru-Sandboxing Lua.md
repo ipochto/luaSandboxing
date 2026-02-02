@@ -754,23 +754,80 @@ void LuaSandbox::reset(bool doCollectGrbg /* = false */)
 
 В Lua это осуществляется двумя путями: через `loadfile`/`dofile` или `require`. Первые два живут в библиотеке `base`, последний — в `package`. Напомню, что ни одну из этих функций мы в песочницу не грузим, а родной `require`, так и вовсе со всей библиотекой игнорируем по соображениям безопасности. Но прежде чем делать свою реализацию, кратко пробежимся по ожидаемому от них поведению.
 
-`loadfile` просто загружает указанный файл, компилирует его в байткод и возвращает как функцию, но не запускает на выполнение. `dofile` же, и загружает _(через тот же самый 'loadfile')_, и запускает.
+`loadfile` просто загружает указанный файл, компилирует его в байткод и возвращает как функцию, но не запускает на выполнение. Либо, в случае возникновения, возвращает ошибку _(если быть совсем точным, то сразу два значения: nil вместо функции и ошибку)_:
 
-`requre` же — это механизм Lua для загрузки модулей. Причём в качестве модулей могут выступать, помимо, собственно, скриптов `.lua`, файлы с уже скомпилированным Lua-байткодом _(в данном аспекте, кстати, `dofile` от него тоже не отстаёт)_, и библиотеки: начиная от стандартных Lua-библиотек, о которых мы говорили выше, до обычных динамических C-библиотек _(ну, те, которые `.so/.dll/.dylib`)_. И это всё прямо из коробки. А если ещё добавить свои загрузчики, то проглотит вообще любой формат: будь то JSON, архив или бинарный код. _Вот уж где нашим юным натуралистам действительно было бы где разгуляться._
+```lua
+-- script.lua
+scriptLoaded = true
+```
+```lua
+scriptLoaded = nil
+
+local fn, err = loadfile("script.lua")
+if not fn then 
+    print(err)
+else
+    print(scriptLoaded) -- > nil
+    fn()
+    print(scriptLoaded) -- > true
+end
+```
+
+`dofile` же, и загружает _(через тот же самый 'loadfile')_, и запускает. А возвращает результат запущенной функции. В случае же возникновения ошибки, не возвращает ничего и бросает Lua-ошибку _(исключение, если хотите)_.
+```lua
+function dofile(filename)
+    local fn, err = loadfile(filename)
+    if not fn then
+        error(err, 2)
+    end
+    return fn()
+end
+```
+Эта ошибка, если не будет отловлена, например, через тот же `pcall`, приведёт к остановке программы. Благо, отлов реализовать довольно просто:
+```lua
+-- script.lua
+return "One Ring to rule them all..."
+```
+```lua
+local ok, res = pcall(dofile, "script.lua")
+if not ok then
+    print("error:", res) -- в res pcall поеместит сообщение об ошибке
+end
+print(res) -- > One Ring to rule them all...
+```
+Если же скрипт возвращает несколько значений, то нам нужно просто добавить количество переменных в соответствии с ожидаемым количеством результатов.
+```lua
+local ok, res1, res1, res3 = pcall(dofile, "script.lua")
+```
+Ошибка, в данном случае, будет помещена в `res1`.
+
+И вот здесь нам нужно будет определиться — хотим мы отлавливать ошибки на стороне C++ или всё-таки Lua? Потому что от этого напрямую зависит семантика вызова — что именно будет сидеть в возвращаемом значении в случае ошибки, и ожидать ли Lua-коду её расшифровку _(если мы обернём вызов в pcall)_.
+
+Но есть один нюанс. Дело в том, что для того, чтобы `pcall` смог поймать ошибку, мы должны вызвать её при помощи C API'шных функций `lua_error`/`luaL_error`, которые, в свою очередь, используют механизм `longjump` для переброса на тот самый вызов `pcall`. При этом происходит перепрыгивание через C++ кадры стека, и деструкторы C++ объектов на этом пути не вызываются. RAII и `lua_error`/`luaL_error` — не самые хорошие соседи.
+
+Поэтому в целях данной статьи предлагаю остановиться на упрощённом варианте — отлавливать на стороне C++ и вообще ничего не возвращать в случае ошибки, плюс добавим ещё одну реализацию — `safe_dofile` с семантикой вызова аналогичной вызову через `pcall`, то есть:
+```lua
+local ok, res1, res2, res3 = safe_dofile("script.lua")
+if not ok then
+    print ("Error:", res1)
+end
+```
+Так, с этими двумя, вроде, разобрались. Остался `require`.
+
+А вот `requre` — это механизм Lua для загрузки модулей. Причём в качестве модулей могут выступать, помимо, собственно, скриптов `.lua`, файлы с уже скомпилированным Lua-байткодом _(в данном аспекте, кстати, `dofile` от него тоже не отстаёт)_, и библиотеки: начиная от стандартных Lua-библиотек _(о которых мы говорили выше)_, до обычных динамических C-библиотек _(ну, те, которые `.so/.dll/.dylib`)_. И это всё прямо из коробки. А если ещё добавить свои загрузчики, то проглотит вообще любой формат: будь то JSON, архив или бинарный код. _Вот уж где нашим юным натуралистам действительно было бы где разгуляться._
 
 Кроме того, у `require` есть пара ключевых отличий от `dofile`, на которых придётся остановиться чуть подробнее, так как они важны для нашей реализации:
 
 - Для того чтобы загрузить модуль, нам не нужно знать, где именно тот сидит в файловой системе — достаточно просто указать имя модуля, и `require` сам полезет его искать. И даже больше: `require` в принципе не сможет корректно обработать в качестве своего аргумента имя модуля с явным указанием пути к нему. А вот для `dofile` пути нужно указывать явно:
 
-  `dofile("path/to/our/modules/rocket_science.lua")`
-
-  vs
-
-  `require("rocket_science")`
-
+  | | | |
+  |-|-|-|
+  |`dofile("path/to/our/modules/rocket_science.lua")`| vs | `require("rocket_science")`|
+  | | | |
+  
   Ищет он, конечно, не по всей файловой системе, а только в заранее заданных путях, но механизм защиты переменной, содержащей разрешённые пути отсутствует напрочь — это одна из причин, почему мы не используем родной `require` предоставляемый Lua.
 
-  И да, на отсутствие расширения в имени файла во втором варианте внимание же тоже обратили, да? Это не ошибка — это ещё одна особенность, которую нужно учитывать.
+  На отсутствие расширения в имени файла во втором варианте внимание же тоже обратили, да? Это не ошибка — это ещё одна особенность, которую нужно учитывать.
 
 - `require` не просто загружает файл, он задействует механизм кеширования уже подтянутых модулей и при повторном запросе просто подсовывает их из кеша. В нашем случае мы пойдём на упрощение и не будем реализовывать этот функционал, т.к. нам нужен хотрелоад _(перезагрузка модулей в случае их изменения на диске)_, и мы допускаем, что модули могут иметь одинаковые имена, но жить в разных директориях — например, у разных модов могут быть свои реализации.
 
@@ -787,13 +844,13 @@ void LuaSandbox::reset(bool doCollectGrbg /* = false */)
 
 Первое: `dofile` принимает как абсолютные, так и относительные пути. Причём, если с абсолютными всё понятно — ну это те, что `C:\Windows\System32` и `/opt/dwarffortress` — т.е. полные и однозначные. То с относительными — которые `../../.ssh` и `..\Downloads` — сложнее, так как в Lua они интерпретируются не относительно директории текущего скрипта (в котором `dofile` вызывается), а относительно текущего рабочего каталога **процесса**.
 
-Поэтому, если предполагается хоть какая-то иерархическая организация файлов скриптов, то нам придётся для каждого вызываемого скрипта указывать полный путь к нему _(ну не вручную, конечно)_. Плюс, это позволит прикрыть лазейку с обходом ограничений путём подмены рабочего каталога самого процесса. 
+Поэтому, если предполагается хоть какая-то иерархическая организация файлов скриптов, то нам придётся для каждого вызываемого скрипта указывать полный путь к нему _(ну, не вручную в самом скрипте конечно, но определённую толику геморроя, связанного с подкапотными преобразованиями относительный -> абсолютный нам это добавит)_. Плюс, это позволит прикрыть лазейку с обходом ограничений путём подмены рабочего каталога самого процесса.
 
 Следовательно, для песочниц нам нужно задать:
 - Список разрешённых путей, откуда позволено скрипты запускать.
 - Корневую директорию, от которой будут интерпретироваться относительные пути. Если же она не задана, то вообще их запрещаем и работаем только с абсолютными.
 
-Переходим к водным процедурам — начнём с добавления поддержки путей:
+С теорией закончили, переходим к водным процедурам — начнём с добавления поддержки путей:
 
 ```cpp
 namespace fs = std::filesystem;
@@ -802,10 +859,14 @@ class LuaSandbox
 {
 public:
     ...
-
     using Paths = std::vector<fs::path>;
 
     // Дополняем конструктор:
+    //
+    // @root          Рабочая директория - отсюда рассчитываются относительные пути
+    //                скриптов. Если не задана, то разрешаем только абсолютные.
+    // @allowedPaths  Список разрешённых путей, а вот здесь допускаем как 
+    //                относительные, так и абсолютные.
     explicit LuaSandbox(LuaRuntime &runtime,
                         Presets preset,
                         const fs::path &root = {},
@@ -817,29 +878,25 @@ public:
         reset();
     }
 
-    void allowScriptPath(const fs::path &path); // Добавляет путь к списку разрешённых
+    // Интерфейс для добавления пути к списку разрешённых. Сделаем его публичным,
+    // чтобы была возможность добавлять не только на этапе создания объекта
+    bool allowScriptPath(const fs::path &path);
     ...
 private:
-
+    // А через это инициализируем пути при создании песочницы
     void setPathsForScripts(const fs::path &root, const Paths &allowed);
 
-    fs::path scriptsRoot{}; // Содержит абсолютный, лексически нормализованный базовый путь.
-                            // Именно отсюда рассчитываются относительные пути скриптов
-                            // Если же не задан, то вообще запрещаем запуск файлов
-
-    Paths allowedScriptPaths{}; // Допускаем как относительные, так и абсолютные пути
+    // Преобразует текст в путь в т.ч. с учётом базового (для относительных)
+    auto toScriptPath(const std::string &fileName) const -> fs::path;
+    ...
+private:
+    // Храним как абсолютные, лексически нормализованные
+    fs::path scriptsRoot{};     // Базовый путь
+    Paths allowedScriptPaths{}; // Список разрешённых, преобразованных в абсолютные
     ...
 };
-
-void LuaSandbox::allowScriptPath(const fs::path &path)
-{
-    if (scriptsRoot.empty() || path.empty()) {
-        return;
-    }
-    const auto allow = path.is_relative() ? scriptsRoot / path : path;
-    allowedScriptPaths.push_back(fs_utils::normalize(allow));
-}
-
+```
+```cpp
 void LuaSandbox::setPathsForScripts(const fs::path &root, const Paths &allowed)
 {
     scriptsRoot.clear();
@@ -851,11 +908,37 @@ void LuaSandbox::setPathsForScripts(const fs::path &root, const Paths &allowed)
         allowScriptPath(path);
     }
 }
+
+bool LuaSandbox::allowScriptPath(const fs::path &path)
+{
+    // Не добавляем относительные пути если базовый изначально не был задан
+    if (path.empty()
+        || (scriptsRoot.empty() && path.is_relative())) {
+        return false;
+    }
+    // Абсолютные добавляем как есть,
+    // относительные преобразовываем относительно базового
+    const auto allow = path.is_relative() ? scriptsRoot / path : path;
+    allowedScriptPaths.push_back(fs_utils::normalize(allow));
+    return true;
+}
+
+auto LuaSandbox::toScriptPath(const std::string &fileName) const
+    -> fs::path
+{
+    auto scriptPath = fs::path(fileName);
+    // Если путь относительный то преобразовываем его относительно базового.
+    // Если он задан. Если нет, то это не наша проблема - наверху разберутся
+    if (scriptPath.is_relative() && !scriptsRoot.empty()) {
+        scriptPath = scriptsRoot / scriptPath;
+    }
+    return scriptPath.lexically_normal();
+}
 ```
 `fs_utils::normalize` в представленном коде — это ещё один хелпер, на сей раз уже для работы с путями. Точнее, `fs_utils` — это неймспейс с несколькими такими утилитами. В силу того, что они лишь косвенно связаны с обсуждаемой темой, подробно останавливаться на этом не будем.
 
 <details>
-<summary> Но если вдруг интересно — код fs_utils для самостоятельного ознакомления. [развернуть]</summary>
+<summary> Но если, вдруг, совсем интересно. [развернуть]</summary>
 
 ```cpp
 namespace fs = std::filesystem;
@@ -883,6 +966,9 @@ namespace fs_utils
         if (root.empty()) {
             return false;
         }
+        // Да, здесь присуствует fs::absolute, который строит путь относительно рабочей 
+        // дирректории *процесса* - ибо утилита универсальная и работать должна с обоими типами,
+        // но в нашем случае это не страшно т.к. мы сюда передаём только абсолютные пути.
         const auto rootNorm = normalize(fs::absolute(root));
         const auto pathNorm = normalize(fs::absolute(path));
         const auto [rootEnd, _] = std::ranges::mismatch(rootNorm, pathNorm);
@@ -912,71 +998,67 @@ namespace fs_utils
 
 ## Собираем в кучу
 
-Напомню, как сейчас, выглядит уже имеющийся `runFile`, который запускает запрошенный файл со скриптом:
-
-```cpp
-auto LuaSandbox::runFile(const fs::path &scriptFile)
-    -> sol::protected_function_result
-{
-    return runtime->state.safe_script_file(scriptFile, sandbox);
-}
-```
-Всё, что нам нужно — это добавить в начало несколько проверок:
-- На наличие файла.
+Прежде чем начать пережёвывать файл со скриптом нам нужно проверить его:
+- На наличие.
 - На допустимость его пути.
 - И на его содержимое. Точнее, на то, что он **не** содержит уже скомпилированный байткод, т.к. он позволяет обойти ограничения песочницы.
 
-Ну и возврат соответствующей ошибки, если проверка не пройдена. Благо возвращаемый тип `sol::protected_function_result` нам это позволяет, хоть не очень интуитивно.
-
-В итоге у нас получится следующая картина:
 ```cpp
-auto LuaSandbox::runFile(const fs::path &scriptFile)
-    -> sol::protected_function_result
+auto LuaSandbox::checkIfAllowedToLoad(const fs::path &scriptFile) const
+    -> std::tuple<bool, std::string_view> // Статус и текст ошибки, если она есть
 {
-    // Вручную формируем "ошибочный" результат, содержащий текст сообщение об ошибке
-    // Поясниения будут ниже
-    auto error = [this, &scriptFile](std::string_view msg) {
-        const auto errMsg = std::format("{}: {}", msg, scriptFile.string());
-        return lua::makeFnCallResult(runtime->state, errMsg, sol::call_status::file);
-    };
-
     if (!fs::exists(scriptFile)) {
-        return error("Attempting to run a non-existent script");
+        return {false, "Attempting to run a non-existent script"};
     }
     if (!isPathAllowed(scriptFile)) {
-        return error("Attempting to run a script outside the allowed path");
+        return {false, "Attempting to run a script outside the allowed path"};
     }
     if (lua::isBytecode(scriptFile)) {
-        return error("Attempting to run precompiled Lua bytecode");
+        return {false, "Attempting to run precompiled Lua bytecode"};
     }
-    return runtime->state.safe_script_file(scriptFile, sandbox);
+    return {true, {}};
 }
 ```
-С `fs::exists` всё понятно — функция стандартная, проверяет существование файла или самой директории.
-
-С проверкой допустимости пути тоже всё довольно тривиально:
 ```cpp
 class LuaSandbox
 {
     ...
 private:
-    bool isPathAllowed(const fs::path &scriptFile) const
-    {
-        // Просто проверяем, что запрашиваемый путь находится внутри одного из списка допустимых
-        return fs_utils::startsWith(scriptFile, allowedScriptPaths);
-    }
+    bool isPathAllowed(const fs::path &scriptFile) const;
+    auto checkIfAllowedToLoad(const fs::path &scriptFile) const
+        -> std::tuple<bool, std::string_view>;
     ...
 };
 ```
 
-А вот с проверкой на байт-код и формированием ошибочного результата выполнения всё не так прозаично.
+С `fs::exists` всё понятно — функция стандартная, проверяет существование файла или самой директории.
 
-Файлы, содержащие скомпилированный байт-код, начинаются со специальной сигнатуры `<esc>Lua` что соответствует `\033Lua`, которая в `lua.h` так и объявлена:
+С проверкой допустимости пути тоже всё довольно просто:
+```cpp
+bool LuaSandbox::isPathAllowed(const fs::path &scriptFile) const
+{
+    if (scriptFile.empty()) {
+        return false;
+    }
+    if (scriptFile.is_relative()) {
+        if (scriptsRoot.empty()) {  // Проверяем, что можем преобразовать к абсолютному
+            return false;
+        }
+        // Важно: в fs_utils::startsWith мы должны передавать асолютный путь,
+        // иначе она там его автоматом интерпретирует относительно рабочей директории процесса
+        return fs_utils::startsWith(scriptsRoot / scriptFile, allowedScriptPaths);
+    }
+    return fs_utils::startsWith(scriptFile, allowedScriptPaths);
+}
+```
+А вот с проверкой на байт-код всё не так прозаично. Хотя...
+
+Файлы, содержащие скомпилированный байт-код, начинаются со специальной сигнатуры `<esc>Lua`, где `<esc>` - это `27` в десятичной, или `033` в восьмеричной системе счисления, в которой она и объявлена в `lua.h`:
 
 ```cpp
 #define	LUA_SIGNATURE	"\033Lua"
 ```
-Нам нужно проверить первые 4 байта файла на соответствие ей.
+Поэтому просто проверяем первые 4 байта файла на соответствие ей.
 
 ```cpp
 namespace lua
@@ -996,14 +1078,182 @@ namespace lua
         }
         return ranges::equal(header, signature);
     }
+} // namespace lua
 ```
 
-Ну и формирование корректного возвращаемого объекта `sol::protected_function_result`:
+## loadfile
+Напомню контракт вызова — стандартная (nil, error) идиома:
+```lua
+result, error = loadfile("filename.lua")
+if not result then
+    -- тогда error содержит ошибку
+end
+```
+В C++ у нас для таких случаев есть `pair` или `tuple`. Пускай будет `tuple`.
+```cpp
+using ResultOrErrorMsg = std::tuple<sol::object, sol::object>;
+```
+Осталось обеспечить, чтобы можно было напрямую принимать аргументы из Lua скриптов — а там это реализуется через универсальный `sol::stack_object` — и у нас наконец-то вырисовывается замена для `loadfile`.
+
+```cpp
+auto LuaSandbox::loadfileReplace(sol::stack_object fileName)
+    -> ResultOrErrorMsg
+{
+    // Введём просто чтобы сократить количество писанины 
+    auto lua = sol::state_view(runtime->state.lua_state()); 
+
+    // Используется для формирования результата с ошибкой
+    auto makeError = [&](std::string_view errMsg) -> ResultOrErrorMsg {
+        return {sol::nil, sol::make_object(lua, errMsg)};
+    };
+
+    // На всякий случай
+    if (!fileName.is<std::string>()) {
+        return makeError("Bad argument #1 to 'loadfile' (string expected)");
+    }
+
+    // sol::stack_object -> fs::path
+    const auto filePath = toScriptPath(fileName.as<std::string>());
+
+    // Проверяем уже сам файл на допустимость
+    const auto &[isFileOk, fileErrMsg] = checkIfAllowedToLoad(filePath);
+    if (!isFileOk) {
+        return makeError(fileErrMsg);
+    }
+
+    // А это, собственно, родной Lua loadfile
+    auto loadResult = lua.load_file(filePath.string(), sol::load_mode::text);
+    if (!loadResult.valid()) {
+        sol::error err = loadResult;
+        return makeError(err.what());
+    }
+    // "Вытягиваем" из полученного loadResult чанк-функцию
+    auto chunk = sol::protected_function(loadResult);
+    sandbox.set_on(chunk); // и "опесочиваем" его подменяя окружение
+                           // Напомню: sandbox здесь - это объект sol::environment
+
+    return { sol::make_object(lua, chunk), sol::nil };
+}
+```
+
+## safe_dofile
+
+_*Который с контрактом `(ok, results... = safe_dofile())`_
+
+А вот для возврата переменного количества значений в `sol2` есть `sol::variadic_results`, который, фактически, представляет собой не что иное, как просто вектор объектов `sol::object`.
+```cpp
+auto LuaSandbox::dofileSafe(sol::stack_object fileName)
+    -> sol::variadic_results
+{
+    // Опять же, сокращаем количество писанины 
+    auto lua = sol::state_view(runtime->state.lua_state());
+
+    auto result = sol::variadic_results {}; // Результат выполнения скрипта
+
+    // Лямбда для формирования "ошибочного" результата, содержащего текст ошибки.
+    auto makeError = [&](const std::string &msgError) {
+        result.push_back (sol::make_object(lua, false));
+        result.push_back(sol::make_object(lua, msgError));
+        return result;
+    };
+
+    // Загружаем файл скрипта.
+    // Все проверки пути и самого файла мы там уже реализовали.
+    auto [chunk, error] = loadfileReplace(fileName);
+    if (!chunk.valid()) {
+        const auto msgError = std::format(R"(Unable to load script "{}". Error: "{}")",
+                                          fileName.as<std::string>(),
+                                          error.as<std::string>());
+        return makeError(msgError);
+    }
+    // Т.к. на выходе из loadfile chank у нас обёрнут в sol::object, нам нужно
+    // явно указать, что это функция, прежде чем вызвать её на выполнение.
+    auto fn = chunk.as<sol::protected_function>(); 
+    
+    // Запускаем и проверяем уже на наличие ошибки выполнения самого скрипта.
+    // sol::protected_function_result, возвращаемый fn(), даёт нам такую информацию.
+    auto scriptResult = fn(); 
+    if (!scriptResult.valid()) {
+        sol::error err = scriptResult;
+        const auto msgError = std::format(R"(Unable to execute script "{}". Error: "{}")",
+                                          fileName.as<std::string>(),
+                                          err.what());
+        return makeError(msgError);
+    }
+
+    result.push_back(sol::make_object(lua, true)); // Пушим первый объект - статус выполнения
+    // И вытягиваем все значения из результата выполнения запрошенного скрипта
+    for (auto &&value : scriptResult) {
+        result.push_back(value); 
+    }
+    return result;
+}
+```
+
+## dofile
+
+В документации на `sol2` форграундом по бэкграунду написано, что предпочитаемый способ запуска скриптов — через `sol::state::script()` и `sol::state::script_file()` _(ну или их safe - версии)_. Предпочитаемый до тех пор, пока вы явно не захотите странного [_(правда в терминах документации это звучало как: полного контроля над загрузкой и выполнением кода)_]. Странного мы уже хотели — `loadfileReplace` и `dofileSafe` реализованы как раз через это. Обычный же `dofile` сделаем по заветам RTFM.
+
+По большому счёту `script_file()` - это не что иное, как уже реализованная на стороне `sol2` обёртка над `loadfile` с последующим запуском скомпилированной им функции. А safe-версия просто добавляет контроль ошибок через `pcall`.
+
+И тут вспоминаем, про *уже* имеющийся у нас `runFile`, который запускает запрошенный файл со скриптом.
+```cpp
+auto LuaSandbox::runFile(const fs::path &scriptFile)
+    -> sol::protected_function_result
+{
+    return runtime->state.safe_script_file(scriptFile, sandbox); // Прям по канону )
+}
+```
+Да, пока не содержит вообще никаких проверок, но чуть доработать напильником и замена для `dofile` с ожидаемым поведением у нас в кармане.
+
+Небольшое отступление _(давно не было, правда? Но это нам, действительно, сейчас понадобится - придётся ещё немного потерпеть)_ — пара слов о `sol::protected_function_result`, который мы здесь возвращаем.
+
+В `sol2` есть два типа функций с довольно характерными названиями: `sol::unsafe_function` — дефолтный, и `sol::protected_function`.
+
+Когда мы вызываем Lua-функцию через `sol::protected_function`, `sol2` перехватывает любые рантайм ошибки Lua и, вместо того чтобы позволить программе аварийно завершиться или передать ошибку в виде C++-исключения _(как бы он это сделал для `sol::unsafe_function`)_, оборачивает её в `sol::protected_function_result` и возвращает как результат выполнения функции. В случае же успешного завершения, в него заворачиваются все возвращаемые значения вызываемой функции _(да, их может быть несколько)_. Фактически, это такой аналог вызова через `pcall` в Lua.
+
+`safe_script()` и `safe_script_file()`, кстати, тоже его возвращают.
+
+```cpp
+sol::state lua;
+
+const auto script(R"(
+    function divide(a, b)
+        if b == 0 then 
+            error("Are you kidding me?", 2)
+        end
+        return a / b
+    end
+    return divide
+)");
+
+auto divide = lua.safe_script(script); // sol::protected_function
+if (!divide.valid()) {
+    return;
+}
+
+auto result = divide(42, 0); // sol::protected_function_result
+if (!result.valid()) {
+    sol::error err = result;
+    std::cerr << err.what() << '\n'; // -> "Are you kidding me?"
+    // Обработка ошибки
+    return
+}
+float quotient = result;
+// Или так:
+auto alsoQuotient = result.get<float>();
+```
+
+А, вот, чтобы сформировать его вручную надо немного заморочиться:
  1. В случае успешного выполнения функции поместить в стек — возвращаемый функцией Lua-объект, будь то значение, таблица, функция или `nil`;
  2. Или же, в случае ошибки, вместо результата пушим в стек соответствующее ей сообщение;
  3. И, наконец, создаём объект `sol::protected_function_result` с указанием статуса результата — валидный, который можно использовать дальше, или же — ошибка, которую нужно обработать. Здесь же указываем количество объектов, которое поместили в стек _(да, их может быть несколько, но в нашем случае используем только один)_, эта информация в т.ч. нужна деструктору `sol::protected_function_result` для того, чтобы подчистить стек за собой, но это уже нюансы реализации `sol2`, не будем углубляться.
 
+Звучит многословно, но в коде выглядит более чем лаконично:
+
 ```cpp
+namespace lua
+{
     auto makeFnCallResult(sol::state &lua,
                           const auto &object,
                           sol::call_status callStatus = sol::call_status::ok)
@@ -1016,85 +1266,113 @@ namespace lua
 } // namespace lua
 ```
 
-Осталось обернуть `runFile` таким образом, чтобы он мог напрямую принимать аргументы из Lua скриптов — а там это реализуется через универсальный `sol::stack_object`, и, собственно, всё — замена для `dofile` у нас готова:
+Вот теперь мы можем дополнить `runFile` проверками на допустимость файла и возвращать ошибку, если их не проходим.
+
+```cpp
+auto LuaSandbox::runFile(const fs::path &scriptFile)
+    -> sol::protected_function_result
+{
+    // Лямбда для формирования "ошибочного" результата, содержащего текст ошибки.
+    auto error = [&](std::string_view msg) {
+        const auto errMsg = std::format("{}: {}", msg, scriptFile.string());
+        return lua::makeFnCallResult(runtime->state, errMsg, sol::call_status::file);
+    };
+
+    // Проверки на допустимость файла
+    if (const auto [isFileOk, errMsg] = checkIfAllowedToLoad(scriptFile); !isFileOk) {
+        return error(errMsg);
+    }
+    return runtime->state.safe_script_file(scriptFile, sandbox);
+}
+```
+
+Осталось обернуть его для приёма аргументов напрямую из Lua скриптов _(помним же про `sol::stack_object`?)_. Ну и ошибки обрабатываем на стороне C++, т.к. Lua даже не знает о существовании `sol::protected_function_result`, который для него любезно распатронивает `sol2`. И, собственно, всё — замена для `dofile` у нас готова:
 
 ```cpp
 auto LuaSandbox::dofileReplace(sol::stack_object fileName)
     -> sol::protected_function_result
 {
-    auto nil = [this]() { return lua::makeFnCallResult(runtime->state, sol::nil); };
-
+    // Опять же, на всякий случай
     if (!fileName.is<std::string>()) {
-        return nil();
+        return {}; // ничего не возвращаем
     }
+    // sol::stack_object -> fs::path
     const auto filePath = toScriptPath(fileName.as<std::string>());
-    if (auto result = runFile(filePath); result.valid()) {
-        return result;
-    }
-    return nil();
-}
 
-auto LuaSandbox::toScriptPath(const std::string &fileName) const
-    -> fs::path
-{
-    auto scriptPath = fs::path(fileName);
-    if (scriptPath.is_relative()) {
-        scriptPath = scriptsRoot / scriptPath;
+    auto scriptResult = runFile(filePath);
+    if (!scriptResult.valid()) {
+        sol::error err = scriptResult;
+        // Обработка ошибок
+        // std::cout << err.what() << '\n'
+
+        return {}; // ничего не возвращаем
     }
-    return scriptPath.lexically_normal();
+    return scriptResult;
 }
 ```
+## require
 
-С заменой для `require` всё существенно проще: если запрашиваемый аргумент — имя стандартной Lua-библиотеки, то пробуем её загрузить. Контроль того, что можно загружать и для какого из пресетов `LuaSandbox::Presets`, у нас уже реализован. Так что, в случае успеха, возвращаем таблицу с загруженной библиотекой, иначе `nil`.
+С заменой для `require` всё существенно проще: если запрашиваемый аргумент — имя стандартной Lua-библиотеки, то пробуем её загрузить. Контроль того, что можно загружать и для какого из пресетов `LuaSandbox::Presets`, у нас уже реализован. Так что, в случае успеха, возвращаем таблицу с загруженной библиотекой, иначе `nil` — все ошибки обрабатываем на стороне C++.
 
 ```cpp
 auto LuaSandbox::requireReplace(sol::stack_object target)
-    -> sol::protected_function_result
+    -> sol::object
 {
-    auto nil = [this]() { return lua::makeFnCallResult(runtime->state, sol::nil); };
-
     if (!target.is<std::string>()) {
-        return nil();
+        return sol::nil;
     }
     const auto possibleLibName = target.as<std::string>();
-    if (const auto lib = lua::libByName(possibleLibName); lib.has_value()) {
-        if (require(*lib)) { // Все проверки на допустимость у нас там уже реализованы
-            const auto libLookupName = lua::libLookupName(*lib);
-            return lua::makeFnCallResult(runtime->state, sandbox[libLookupName]);
-        }
+    const auto lib = lua::libByName(possibleLibName);
+    if (!lib) { // Проверяем есть ли такая бибилиотека
+        // std::format(R"(require("{}"): library not found.)", possibleLibName);
+        return sol::nil;
     }
-    return nil();
+    if (!require(*lib)) { // Пробуем её загрузить
+        // std::format(R"(require("{}"): library is forbidden.)", possibleLibName);
+        return sol::nil;
+    }
+    const auto libLookupName = lua::libLookupName(*lib);
+    return sandbox[libLookupName];
 }
 ```
 
-Ну и, конечно, не забываем добавить их в `LuaSandbox`:
+Наконец, объявляем:
 
 ```cpp
 class LuaSandbox
 {
+public:
+    using ResultOrErrorMsg = std::tuple<sol::object, sol::object>;
     ...
 private:
 
+    auto loadfileReplace(sol::stack_object fileName) -> ResultOrErrorMsg;
     auto dofileReplace(sol::stack_object fileName) -> sol::protected_function_result;
-    auto requireReplace(sol::stack_object target) -> sol::protected_function_result;
+    auto dofileSafe(sol::stack_object fileName) -> sol::variadic_results;
+    auto requireReplace(sol::stack_object target) -> sol::object;
 
+    // Метод, которым будем регистрировать наши замены
     void loadSafeExternalScriptFilesRoutine()
     {
+        sandbox.set_function("loadfile", &LuaSandbox::loadfileReplace, this);
         sandbox.set_function("dofile", &LuaSandbox::dofileReplace, this);
+        sandbox.set_function("safe_dofile", &LuaSandbox::dofileSafe, this);
         sandbox.set_function("require", &LuaSandbox::requireReplace, this);
     }
-
-    auto toScriptPath(const std::string &fileName) const -> fs::path;
-
-    bool isPathAllowed(const fs::path &scriptFile) const;
     ...
 };
 ```
-И на этом с водными процедурами заканчиваем.
+И на этом с водными процедурами заканчиваем. Можно выдыхать.
+
+Вот так — тихо и незаметно, на исходе второй части мы подобрались к тому, с чего начинаются все учебники )
 
 ## Hello world!
 
-Дальше `print`. В принципе, его можно было бы и родной оставить, но раз есть возможность перенаправить его выхлоп куда-нибудь помимо `stdout` то почему бы ею не воспользоваться? Просто добавим опцию изменения потока вывода.
+Итак, `print`. В принципе, его можно было бы и родной оставить, но раз есть возможность перенаправить его выхлоп куда-нибудь помимо `stdout` то почему бы ею не воспользоваться?
+
+Для сохранения логики работы оригинального `print` — а он мало того, что сам корректно конвертирует числа, так ещё и для таблиц и функций, полученных в качестве аргументов, даст строки вида `table: 0x12345` / `function: 0x...` — нам придётся задействовать стандартный `tostring` из `sol::lib::base`. Причём в саму песочницу его грузить не нужно — достаточно того, чтобы он присутствовал в Lua-стейте.
+
+Ну и, естественно, добавим опцию изменения потока вывода.
 
 ```cpp
 void LuaSandbox::printReplace(sol::variadic_args args)
@@ -1110,8 +1388,6 @@ void LuaSandbox::printReplace(sol::variadic_args args)
     *printOutStrm << "[lua sandbox]:> " << result << "\n";
 }
 ```
-Для сохранения логики работы оригинального `print` — а он мало того, что сам корректно конвертирует числа, так ещё и для таблиц и функций, полученных в качестве аргументов, даст строки вида `table: 0x12345` / `function: 0x...` — нам придётся задействовать стандартный `tostring` из `sol::lib::base`. Причём в саму песочницу его грузить не нужно — достаточно того, чтобы он присутствовал в Lua-стейте:
-
 ```cpp
 namespace lua
 {
@@ -1125,7 +1401,7 @@ namespace lua
     }
 } // namespace lua
 ```
-Ну и остаётся только доработать определение класса - добавляем в конструктор песочницы аргумент с потоком вывода, объявляем нашу замену для `print` и добавляем метод, осуществляющий его подмену.
+Остаётся только доработать определение класса — добавляем в конструктор песочницы аргумент с потоком вывода, объявляем нашу замену для `print` и добавляем метод, осуществляющий его подмену.
 ```cpp
 class LuaSandbox
 {
@@ -1149,6 +1425,8 @@ private:
     void loadSafePrint()
     {
         // В Lua-стейт должна быть загружена библиотека base, чтобы tostring работал
+        // Обращаю внимание - в сейт. В самой песочнице эта библиотека может быть
+        // вообще не загружена, но print работать будет.        
         runtime->require(sol::lib::base);
         sandbox.set_function("print", &LuaSandbox::printReplace, this);
     }
@@ -1157,11 +1435,222 @@ private:
     std::ostream *printOutStrm;
 };
 ```
+
+## «Ага, б...!» — сказали суровые сибирские лесорубы
+
+Ну что, в качестве промежуточного итога давайте теперь попробуем нашкодить?
+
+```cpp
+// Cpp
+namespace fs = std::filesystem;
+
+const auto wrkDir = fs::current_path(); // Пускай будет рабочий каталог процесса
+const auto allowedDirs = LuaSandbox::Paths{wrkDir / "scripts"};
+
+auto lua = LuaRuntime {};
+auto sandbox = LuaSandbox(lua,
+                          LuaSandbox::Presets::Core, // Запрещаем вообще все либы
+                          wrkDir, // Базовый каталог для относительных путей
+                          allowedDirs); // Разрешаем скрипты только отсюда
+```
+```lua
+-- try_1.lua
+-- ../try_1.lua
+-- scripts/try_1.lua
+
+-- print есть?
+if print then
+    -- что, и работает?
+    print("Knock-knock-knok... ") -- > Knock-knock-knok... 
+else 
+    return "не, не в этот раз"
+end
+
+-- ok, print есть, значит base загружена?
+if not ipairs or not pcall then
+    -- А вот хрен там - не загружена
+
+    if require then -- а require есть?
+        -- есть! пробуем загрузить base
+        local res = require("base")
+        
+        if not res then 
+            -- литовский праздник
+            return "Обломайтэс"
+        end
+    end
+end
+return "bingo!"
+```
+```cpp
+// Cpp
+
+// Пробуем выполнить скрипт
+assert(fs::exist("script/try.lua") == false); // не существующий
+auto result = sandbox.runFile("script/try.lua"); // но в пределах разрешённого пути
+assert(result.valid() == false);
+
+assert(fs::exist("try_1.lua") == false); // существующий
+auto result = sandbox.runFile("try_1.lua"); // но вне "scripts"
+assert(result.valid() == false);
+
+assert(fs::exist("../try_1.lua") == false); // существующий
+result = sandbox.runFile("../try_1.lua"); // но за пределами рабочего каталога
+assert(result.valid() == false);
+
+result = sandbox.runFile("scripts/try_1.lua");
+assert(result.valid() == true); // ага, получилось
+
+assert(result.get<std::string>() == "Обломайтэс"); // но библиотеку не может загрузить
+
+// Ладно, а так?
+sandbox = LuaSandbox(lua,
+                     LuaSandbox::Presets::Custom, // Разрешаем ad-hoc подгрузку либ
+                     wrkDir,
+                     allowedDirs);
+
+result = sandbox.runFile("scripts/try_1.lua");
+assert(result.get<std::string>() == "bingo!"); // а так загрузил
+
+// Ок, пробуем запрещёнку
+```
+```lua
+-- scripts/try_2.lua
+
+-- Чего мелочиться, давайте ФС пощупаем
+-- Проверка на дурака - вдруг уже есть?
+if io then
+    return "io.open('~/.ssh/config', 'r')"
+end
+-- ну да, конечно...
+
+-- пытаемся загрузить
+io = require("io")
+if io then
+    return "io.open('~/.ssh/id_ed25519', 'r')"
+end
+
+-- ладно, тогда что-нибудь не сильно запрещённое
+os = require("os")
+-- проверям те, что гарантированно разрешены
+if not os.time or not os.clock or not os.difftime then
+    return "неожиданно..."
+end
+
+-- о, загрузилась
+if os.execute then
+    return "os.execute('echo rm -rf ~/')"
+end
+-- но не вся
+return "хрен там"
+```
+```cpp
+// Cpp
+result = sandbox.runFile("scripts/try_2.lua");
+assert(result.get<std::string>() == "хрен там"); // опять мимо
+
+// Ну что, остались только скрипты из Lua
+```
+
+```lua
+-- downloads/pandoras_box.lua
+-- scripts/pandoras_box.lua
+
+require(table)
+
+local box = {}
+
+function box:open()
+    -- Тут интрига, ниже раскрою
+end
+
+function box.punishment(count)
+    -- интрига
+end
+
+function box.mobius()
+    -- интрига
+end
+
+function box:init()
+    self.open()
+end
+
+return box
+```
+
+```lua
+-- scripts/script_loader.lua
+
+-- пробуем несуществующий файл
+local fn, err = loadfile("scripts/pandoras_chest.lua")
+if fn then 
+    return "It's a miracle"
+end
+
+-- существующий, но вне допустимого пути
+fn, err = loadfile("downloads/pandoras_box.lua")
+if fn then 
+    return "Oops..."
+end
+
+-- ладно, хватит издеваться - загружаем нормальный
+fn, err = loadfile("scripts/pandoras_box.lua")
+if not fn then
+    return "Вот это поворот!"
+end
+
+-- отлично - загружается, для разнообразия запустим через safe_dofile
+local ok, res = safe_dofile("scripts/pandoras_box.lua")
+if not ok or (not res and not res.init) then
+    return "Oops!... I did it again"
+end
+
+harmless = res -- и помещаем в глобальную область видимости
+
+return "Bomb has been planted"
+```
+```cpp
+// Cpp
+
+// И проверяем на вшивость
+result = sandbox.runFile("scripts/script_loader.lua");
+assert(result.get<std::string>() == "Bomb has been planted");
+
+// Поздравляю - Mischief managed
+
+sandbox.run("harmless:init()"); // kaboom baby!
+```
+
+Потому что:
+```lua
+-- Интрига
+function box:open()
+    -- этот лангоньер сжирает всю память
+    for i = 1, 1000000 do
+        self.punishment(1000000)
+    end
+    -- а этим мы вешаем систему
+    self.mobius()
+end
+
+function box.punishment(count)
+    chalkboard = chalkboard or {}
+    for iter = 1, count do
+        table.insert(chalkboard, "I will not waste chalk" .. ", ")
+    end
+end
+
+function mobius()
+    while true do end
+end
+```
+
 ## Не трогай, это на новый год
 
 Прежде чем переходить к ограничению потребляемой памяти, сначала разберёмся как, собственно, в Lua реализована работа с ней.
 
-Каждый раз, когда Lua требуется выделить, перераспределить или освободить память происходит вызов одного универсального аллокатора, который всё это умеет.
+Каждый раз, когда Lua требуется выделить, перераспределить или освободить память происходит вызов одного универсального аллокатора.
 
 ```lua
 -- Создаём новую таблицу?
@@ -1223,10 +1712,10 @@ void *luaAlloc(void *ptr, size_t newSize)
 
 А теперь самое интересное: Lua позволяет подменить свой стандартный аллокатор пользовательским и гарантирует, что абсолютно все запросы памяти будут идти именно через него. То есть механизм у нас есть: перехватываем контроль за выделением памяти, ведём её учёт и, в случае превышения лимитов, просто не даём лишнего.
 
-Более того, Lua нам существенно упрощает жизнь в плане реализации учёта, т.к. на самом деле в аллокатор передаются ещё два очень полезных для нас параметра:
+Более того, Lua нам существенно упрощает жизнь в плане реализации учёта, так как на самом деле в аллокатор передаются ещё два очень полезных для нас параметра:
 
 ```cpp
-void *luaAlloc(void *ud, void *ptr, size_t currSize, size_t newSize)
+void *luaAlloc(void *ud, void *ptr, size_t currSize, size_t newSize);
 ```
 `ud` — указатель на блок пользовательских данных, и `currSize` — текущий размер блока памяти, на который указывает `*ptr`.
 
@@ -1257,7 +1746,7 @@ struct LuaAllocatorState
 sol::state lua(sol::default_at_panic, limitedAlloc, &allocState);
 
 ```
-Насчёт первого аргумента — `sol::default_at_panic` — не заморачиваемся, это дефолтный `sol`'овский обработчик ошибок типа "всё пропало". Просто в конструкторе он идёт первым, и мы вынуждены его указать явно, чтобы была возможность задать последние два аргумента.
+Насчёт первого аргумента — `sol::default_at_panic` — пока не заморачиваемся, это дефолтный `sol`'овский обработчик ошибок типа "всё пропало". Просто в конструкторе он идёт первым, и мы вынуждены его указать явно, чтобы была возможность задать последние два аргумента.
 
 Ну и нужно следить за тем, чтобы жизненный цикл `allocState` был больше чем у самого `lua::state` т.к. при удалении последнего, Lua активно использует наш аллокатор для того, чтобы прибить всё, что она _(он?)_ навыделяла для себя.
 
@@ -1336,7 +1825,7 @@ namespace lua
 } // namespace lua
 
 ```
-Ну а подружить с `Luaruntime` — это уже совсем тривиальная задача.
+Ну а подружить с `LuaRuntime` — это уже совсем тривиальная задача.
 ```cpp
 class LuaRuntime
 {
@@ -1344,11 +1833,12 @@ private:
     lua::memory::LimitedAllocatorState allocatorState;
 
 public:
-    sol::state state; // state у нас уже был объявлен, но здесь он намеренно указан ещё раз,
-                      // чтобы подчеркнуть порядок объявления полей от которого зависит
-                      // их время жизни:
+    sol::state state; // state у нас уже был объявлен, но здесь он намеренно
+                      // указан ещё раз, чтобы подчеркнуть порядок объявления полей
+                      // от которого зависит их время жизни:
                       // allocatorState должен быть объявлен раньше чем state,
-                      // чтобы гарантировать работу аллокатора, на этапе удаления state.
+                      // чтобы гарантировать работу аллокатора,
+                      // на этапе удаления state.
 
 public:
     // Добавляем ещё один конструктор в LuaRuntime,
@@ -1358,24 +1848,29 @@ public:
           state(sol::default_at_panic, lua::memory::limitedAlloc, &allocatorState)
     {}
 
-    // Чтобы не возвращаться к этому вопросу позже - сразу реализуем возможность сброса lua-стейта
+    // Чтобы не возвращаться к этому вопросу позже - 
+    // сразу реализуем возможность сброса lua-стейта
     void LuaRuntime::reset()
     {
         if (allocatorState.isActivated()) {
-            // Т.к. и для старого и для нового sol::state у нас allocatorState один и тот же,
-            // причём сначала создастся новый и только потом буден удалён старый, то
-            // в теории возможен выход за пределы установленного лимита. Поэтому просто
-            // отключим лимит на время этих телодвижений.
+            // Т.к. и для старого и для нового sol::state у нас один и тот же
+            // allocatorState, причём сначала создастся новый и только потом будет
+            // удалён старый, то в теории возможен выход за пределы установленного
+            // лимита. Поэтому просто отключим лимит на время этих телодвижений.
 
-            const auto currentLimit = allocatorState.limit; // Сохраняем для нового стейта
+            // Сохраняем для нового стейта
+            const auto currentLimit = allocatorState.limit;
             allocatorState.disableLimit();
 
-            state = sol::state(sol::default_at_panic, lua::memory::limitedAlloc, &allocatorState);
-            // К этому моменту allocatorState.used у нас сначала увеличился на размер выделенной
-            // памяти для нового lua-стейта, а затем уменьшился на весь объём памяти предыдущего.
-            // Т.е. сейчас он у нас полностью соответствует новому. Его вместе с размером лимита
-            // переносим в новый allocatorState, а все остальные поля сбрасываем до дефолтных
-            // значений.
+            state = sol::state(sol::default_at_panic,
+                               lua::memory::limitedAlloc,
+                               &allocatorState);
+            // К этому моменту allocatorState.used у нас сначала увеличился на
+            // размер выделенной памяти для нового lua-стейта, а затем уменьшился
+            // на весь объём памяти предыдущего.
+            // Т.е. сейчас он у нас полностью соответствует новому.
+            // Его вместе с размером лимита переносим в новый allocatorState,
+            // а все остальные поля сбрасываем до дефолтных значений.
             allocatorState = {.used = allocatorState.used, .limit = currentLimit};
         } else {
             state = sol::state();
@@ -1403,7 +1898,7 @@ LuaSandbox sandbox(lua, LuaSandbox::Presets::Minimal);
 auto result = sandbox.run(R"(
     chalkboard = {}
     while true do
-        table.insert(chalkboard, "I will not waste chalk")
+        table.insert(chalkboard, "I will not waste chalk" .. ", ")
     end
 )");
 
@@ -1418,8 +1913,7 @@ if (!result.valid()) {
 
 Так вот, чтобы получить такое поведение, нам необходимо явно запретить все исключения `sol2`.
 
-Помните я в начале говорил о том, что для подключения Lua к нашему C++ проекту достаточно одного заголовочного файла?
-Я немного упростил. На самом деле нам придётся ещё задать несколько опций для конфигурации `sol2`, но на том этапе это была избыточная информация. Теперь можно )
+Помните я в начале говорил о том, что для подключения Lua к нашему C++ проекту достаточно одного заголовочного файла? Я немного упростил. На самом деле нам придётся ещё задать несколько опций для конфигурации `sol2`, но на том этапе это была избыточная информация. Теперь можно )
 
 ```cpp
 #define SOL_ALL_SAFETIES_ON 1   // Включает все доступные в sol2 механизмы безопасности,
