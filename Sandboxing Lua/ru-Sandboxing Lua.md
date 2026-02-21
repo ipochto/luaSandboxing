@@ -2319,18 +2319,16 @@ sandbox["acceptTheFiefOfArrakis"] = [&]() -> sol::protectef_function_result {
 
 А ведь это мы ещё даже внутрь `.lua`-файла не заглянули. 
 
-И, вот, в свете того, что нам сейчас придётся как-то разруливать потенциальные проблемы с глобальными состояниями, которые могут быть изменены где, и кем только не, идея с загрузкой контекста и хука перед каждым использованием уже перестаёт восприниматься как нечто иррациональное. И, которое, становится даже более чем рациональным после того, как посчитать реальные затраты на загрузку/выгрузку, и понять, что они просто ничтожно малы, по сравнению с затратами на исполнение самого защищаемого Lua-кода.
+И, вот, в свете того, что нам сейчас придётся как-то разруливать потенциальные проблемы с глобальными состояниями, которые могут быть изменены где, и кем только не, идея с загрузкой контекста и хука перед каждым использованием уже перестаёт восприниматься как нечто иррациональное. И становится даже более чем рациональным после того, как посчитать реальные затраты на загрузку/выгрузку, и понять, что они просто ничтожно малы, по сравнению с затратами на исполнение самого защищаемого Lua-кода. Ну и добьём тем, что контроль времени выполнения требуется очень далеко не для всего Lua-кода, и даже более — нам никто не мешает реализоваться такую опцию, как "только первый запуск с контролем", после чего скрипт/функция переходит в разряд доверенных.
 
+Поэтому, чтобы сейчас не переусложнять, есть предложение на данном этапе остановиться на решении в лоб, а тонкую оптимизацию оставить на потом _(если, конечно, профайлинг покажет (покажет!), что многократные постановки и снятия хука с его контекстом, действительно, дают просадку производительности)_. Кто сказал "технический долг"?
 
+Итак, решение "в лоб":
+Каждый запуск Lua-кода с защитой по таймауту предваряется регистрацией контекста и хука, которые выгружаются при завершении. Если хук или контекст уже были установлены - защита не активируется. Но в пределах такого блока оставляем возможность для реактивации таймера — продления его времени действия, чтобы можно было последовательно несколько кусков Lua-кода выполнить.
 
+Напомню, это всё было "во-первых".
 
-
-
-
-
-Во-вторых, обмажем ещё одним слоем абстракции: `Watchdog`, на плечи которой ляжет рутина по регистрации контекста в реестре, постановка хука и активация таймера, включая проверки естественно. Ну и обратные действия конечно. 
-
-
+А во-вторых, обмажемся ещё одним слоем абстракции: `Watchdog`, на плечи которой ляжет рутина по регистрации контекста в реестре, постановка хука и активация таймера, включая проверки естественно. Ну и обратные действия конечно. Кроме того, `Watchdog` у нас будет привязываться к конкретному Lua-стейту.
 
 ```cpp
 namespace lua::timeoutGuard
@@ -2361,7 +2359,7 @@ namespace lua::timeoutGuard
               hook(hookFn)
         {}
 
-        // Отключаем возможность копирования и перемещения
+        // Отключаем возможность копирования и перемещения во избежание эксцессов
         Watchdog(const Watchdog &) = delete;
         Watchdog &operator=(const Watchdog &) = delete;
         Watchdog(Watchdog &&) = delete;
@@ -2393,14 +2391,292 @@ namespace lua::timeoutGuard
         // Проверка на предмет привязки к какому-нибудь Lua-стейту
         bool attached() { return lua != nullptr; } 
     };
+```
+```cpp
+    // Привязка к Lua-стейту
+    bool Watchdog::attach(sol::state_view newLua, bool force /* = false */)
+    {
+        // Осуществляем привязку только в том случае, если в данный момент защита
+        // не активирована. Мы же условились, что активирована она может быть только
+        // непосредственно перед выполнением защищаемого Lua-кода, следовательно
+        // переключение Lua-стейта сейчас - явно нечто странное.
+        if (force) {
+            // Но допускаем принудительную перепривязку через соотвествующую опцию
+            detach();
+        } else if (armed()) {
+            spdlog::error("Cannot attach timeout watchdog to a new Lua state while it's armed");
+            return false;
+        }
+        lua = newLua;
+        return true;
+    }
+
+    // Отвязка от текущего Lua-стейта
+    void Watchdog::detach()
+    {
+        disarm();
+        lua = nullptr;
+    }
+
+    // Задаём параметры хука - период вызова и саму функцию - обработчик
+    // Здесь только задаём значения, в Lua-стейт не ставится!
+    bool Watchdog::configureHook(InstructionsCount newCheckPeriod, lua_Hook newHook)
+    {
+        if (armed()) { // Запрет на изменения если защита взведена
+            spdlog::error("Cannot change timeout watchdog hook settings while it's armed");
+            return false;
+        }
+        if (newCheckPeriod <= 0) { // Защита от установки ошибочных значений
+            spdlog::error("Unable to change timeout watchdog hook settings: "
+                          "Check period has to be a positive integer");
+            return false;
+        }
+        if (newHook == nullptr) { // Защита от установки ошибочных значений
+            spdlog::error("Unable to change timeout watchdog hook settings: "
+                          "Hook function pointer cannot be null");
+            return false;
+        }
+        checkPeriod = newCheckPeriod;
+        hook = newHook;
+        return true;
+    }
+
+    // Взведение защиты в активное состояние
+    bool Watchdog::arm(time::milliseconds limit)
+    {
+        if (armed()) { // Опять же, защита от повторного взведения
+            spdlog::error("Unable to arm timeout watchdog: already armed");
+            return false;
+        }
+        if (!attached()) { // Не даём взвестись, если не привязаны к Lua-стейту
+            spdlog::error("Unable to arm timeout watchdog: "
+                          "Lua state is not properly initialized");
+            return false;
+        }
+        // Проверка на незанятость ячейки реестра под контекст
+        if (!CtxRegistry::empty(lua)) {
+            spdlog::error("Unable to arm timeout watchdog: "
+                          "Lua state already has a hook context registered");
+            return false;
+        }
+        // Проверка на то, что кто-то другой уже не повесил свой хук
+        if (lua_gethook(lua) != nullptr) {
+            spdlog::error("Unable to arm timeout watchdog: Lua state already has a hook set");
+            return false;
+        }
+        running = true;
+        CtxRegistry::set(lua, &context); // Регистрируем контекст
+        setHook(lua, checkPeriod, hook); // Ставим хук
+        context.start(limit);            // Запускаем таймер
+        return true;
+    }
+
+    // Принудительное обнуление таймера, для продления его времени действия
+    bool Watchdog::rearm(time::milliseconds limit)
+    {
+        // Работает только если защита была взведена ранее
+        if (!armed()) {
+            spdlog::error("Unable to rearm timeout watchdog: it is not currently armed");
+            return false;
+        }
+        context.start(limit);
+        return true;
+    }
+
+    // Отключение защиты
+    void Watchdog::disarm()
+    {
+        context.reset(); // Обнуление контекста
+        const bool wasArmed = running;
+        running = false;
+
+        if (!attached() || !wasArmed) { // В этом случае нам нечего дальше выгружать
+            return;
+        }
+        removeHook(lua); // Выгружаем хук
+        CtxRegistry::remove(lua); // и его контекст из реестра
+    }
 } // namespace lua::timeoutGuard
 ```
 
+Смотрим, что в итоге получилось:
 
-Можно обернуть `runFile` в какой-нибудь `runFileTimeSafe()`
+```cpp
+LuaRuntime lua;
+LuaSandbox sandbox(lua, LuaSandbox::Presets::Minimal);
+
+auto watchdog = timeout::Watchdog(lua);
+
+watchdog.arm(5ms);
+
+sandbox.runFile("exceedingly_suspected.lua")
+
+if (watchdog.timedOut()) {
+    ...
+}
+
+watchdog.disarm();
+```
+
+Ну что же, можно констатировать, что уже даже более-менее читабельно стало. Разве что ещё `Watchdog` внутрь `LuaRuntime` просится, чтобы в ручную его не создавать.
+
+Ну раз просится...
+
+```cpp
+class LuaRuntime
+{
+    ...
+public:
+	sol::state state; // Опять же, оставил только для фиксации порядка объявления
+    ...
+private:
+    // Дадим ему более конкретное наименование
+	lua::timeoutGuard::Watchdog timeoutGuard;
+
+public:
+    // И доработаем конструкторы для принудительной инициализации.
+	LuaRuntime()
+		: state{},
+		  timeoutGuard(state) // Гарантированно привязываем его к стейту
+	{}
+
+	LuaRuntime(size_t memoryLimit,
+               lua::memory::Allocator fn = lua::memory::limitedAlloc)
+		: allocatorState({.limit = memoryLimit}),
+		  allocatorFn(fn),
+		  state(sol::default_at_panic, fn, &allocatorState),
+		  timeoutGuard(state) // И здесь
+	{}
+    ...
+    // Остаётся только дополнить reset(), чтобы при создании нового Lua-стейта
+    // Watchdog у нас автоматически привязывался к новой инкарнации
+    void LuaRuntime::reset()
+    {
+        ...	
+        // Принудительная перепривязка Lua-стейта
+        timeoutGuard.attach(state, true); 
+    }
+};
+```
+Но и это ещё не всё. _[[(Потерпите, чуть-чуть осталось)]]_
+
+Обратили внимание, что `timeoutGuard` — приватный, и отсутствие геттера делает невозможным его использование снаружи? Дело в том, что и его применение можно автоматизировать.
+
+## Лучше день потерять, потом за пять минут долететь!
+
+Отпрыгнем немного в сторону: 
+
+> В C++ имеется механизм конструкторов и деструкторов, которые автоматически вызываются в момент инициализации объектов и при завершении их времени жизни соответственно. Объекты с автоматическим временем хранения уничтожаются автоматически при выходе из блока, в котором они были объявлены.
+
+Понимаете к чему я клоню? Мы можем создать временный объект и вызовы `arm`/`disarm` поместить в его конструктор с деструктором, и ~~обернуть это всё фигурными скобками~~ поместить его в один блок с вызовом защищаемого Lua-кода:
+
+```cpp
+LuaRuntime lua;
+LuaSandbox sandbox(lua, LuaSandbox::Presets::Minimal);
+
+// Здесь вызываем доверенный код
+sandbox.runFile("trusted_code.lua");
+
+{ // Блок подозрительного кода
+    auto scopeGuard = sandbox.makeTimeoutGuardedScope(5ms); // arm() в конструкторе
+
+    sandbox.runFile("exceedingly_suspected.lua")
+    if (scopeGuard.timedOut()) {
+        ...
+    }
+    
+    // При необходимости, можно прямо здесь следующую порцию Lua-кода запустить
+    scopeGuard.rearm(); 
+
+    sandbox["someFunction"](); // Да, с отдельными функциями тоже работает
+    if (scopeGuard.timedOut()) {
+        ...
+    }
+} // disarm() в деструкторе scopeGuard
+...
+```
+Ну согласитесь — из-за такого стоит ещё немного поднапрячься ;)
+
+Ну там, правда, чуть-чуть осталось. Итак, `GuardedScope` — обёртка теперь уже над `Watchdog`:
+
+```cpp
+namespace lua::timeoutGuard
+{
+	class GuardedScope
+	{
+	private:
+		Watchdog *watchdog{nullptr}; // Указатель на оборачиваемый Watchdog
+
+	public:
+        // Watchdog передаём по ссылке, чтобы гарантировать, что объект существует
+		GuardedScope(Watchdog &watchdog, time::milliseconds limit = kDefaultLimit)
+			: watchdog(&watchdog)
+		{
+            // Собственно, то, ради чего всё и затевалось - arm в конструкторе
+			if (!watchdog.arm(limit)) {
+				disable();
+			}
+		}
+        // Запрещаем копирование
+		GuardedScope(const GuardedScope &) = delete;
+		GuardedScope &operator=(const GuardedScope &) = delete;
+
+        // А вот move-конструктор пригодится для для фабричных методов
+		GuardedScope(GuardedScope &&other) 
+            : watchdog(other.watchdog)
+        { 
+            other.disable(); // Деактивируем источник
+        }
+		GuardedScope &operator=(GuardedScope &&other) = delete; // тоже удаляем
+
+		// Автоматическая деактивация Watchdog
+        ~GuardedScope()
+		{
+			if (disabled()) {
+				return;
+			}
+			watchdog->disarm();
+		}
+
+        // Возможность продления времени действия таймера для последующих
+        // порций Lua-кода хапускаемых в этом же scope
+		bool rearm(time::milliseconds limit = kDefaultLimit)
+		{
+			if (disabled()) {
+				return false;
+			}
+			return watchdog->rearm(limit);
+		}
+        // Проверка на сработку
+		bool timedOut() { return !disabled() && watchdog->timedOut(); }
+
+	private:
+		void disable() { watchdog = nullptr; } // Ну и деактивация 
+
+		bool disabled() { return watchdog == nullptr; } // с соотвествующей проверкой
+	};
+} // namespace lua::timeoutGuard
+```
+И последний штрих: добавляем цепочку методов `LuaSandbox`->`LuaRuntime` для получения экземпляра `GuardedScope`:
+```cpp
+auto LuaRuntime::makeTimeoutGuardedScope(std::chrono::milliseconds limit)
+    -> lua::timeoutGuard::GuardedScope
+{
+    return lua::timeoutGuard::GuardedScope{timeoutGuard, limit};
+}
+
+auto LuaSandbox::makeTimeoutGuardedScope(std::chrono::milliseconds limit)
+    -> lua::timeoutGuard::GuardedScope
+{
+    return runtime->makeTimeoutGuardedScope(limit);
+}
+```
+Вот теперь точно всё.
+
+Подведём итоги.
 
 
-
+Спасибо, что дочитали. Надеюсь кому-нибудь пригодится.
 ---
 
 Код в удобоваримой форме можно посмотреть [здесь](https://github.com/ipochto/articles/tree/master/Sandboxing%20Lua/src)
@@ -2409,6 +2685,8 @@ namespace lua::timeoutGuard
 
 ## Что пока не охвачено данной реализацией.
 
-1. Защита от зависаний на стороне lua-скриптов: решается через хуки и таймауты — если скрипт выполняется дольше чем разрешено таймаутом, то скрипт просто прибивается. Да, это не решает проблему неработоспособности скрипта, но, по крайней мере, даёт возможность нашему движку отработать ошибку и работать дальше, не вылетев из-за кривого мода/карты.
-2. Механизм контроля целостности доверенных скриптов — например, скриптов, поставляемых нами самими. Со скриптами модов пользователь может делать что угодно, но для гарантированной работоспособности движка родные скрипты трогать не стоит.
-3. Hotreload — по факту изменения.
+1. Механизм контроля целостности доверенных скриптов — например, скриптов, поставляемых нами самими. Со скриптами модов пользователь может делать что угодно, но для гарантированной работоспособности движка родные скрипты трогать не стоит.
+2. Hotreload — по факту изменения. В общем логика простая - регистрируем определённые скрипты как hotreload, периодически проверяем не изменились ли файлы и если да, то перезапускаем их.
+
+Но деталям реализации ещё нужно выкристаллизоваться, прежде чем излагать в виде статьи. Возможно как-нибудь потом.
+
