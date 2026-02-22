@@ -1,83 +1,47 @@
 #pragma once
 
 #include "sol2.hpp"
+#include "lua_utils.hpp"
+
+#include "utils/enum_set.hpp"
 #include "utils/filesystem.hpp"
 #include "utils/optional_ref.hpp"
 
 #include <map>
-#include <set>
 #include <string_view>
 #include <vector>
 
 template <typename T>
 concept SolLibContainer =
-	std::ranges::range<T> 
+	std::ranges::range<T>
 	&& std::same_as<std::ranges::range_value_t<T>, sol::lib>;
-
-namespace lua
-{
-	[[nodiscard]]
-	constexpr auto libName(sol::lib lib) noexcept -> std::optional<std::string_view>;
-
-	[[nodiscard]]
-	constexpr auto libByName(std::string_view libName) noexcept -> std::optional<sol::lib>;
-
-	[[nodiscard]]
-	constexpr auto libLookupName(sol::lib lib) noexcept -> std::string_view;
-
-	[[nodiscard]]
-	auto toString(const sol::object &obj) -> std::string;
-
-	[[nodiscard]]
-	bool isBytecode(const fs::path &file);
-
-	[[nodiscard]]
-	auto makeFnCallResult(sol::state &lua,
-						  const auto &object,
-						  sol::call_status callStatus = sol::call_status::ok)
-		-> sol::protected_function_result;
-
-	namespace memory
-	{
-		constexpr size_t c1MB = 1L * 1024 * 1024;
-		constexpr size_t cDefaultMemLimit = c1MB;
-
-		struct LimitedAllocatorState
-		{
-			size_t used {};
-			size_t limit {cDefaultMemLimit};
-
-			bool limitReached {false};
-			bool overflow {false};
-
-			[[nodiscard]]
-			bool isActivated() const { return used > 0; }
-			[[nodiscard]]
-			bool isLimitEnabled() const { return limit > 0; }
-
-			void disableLimit() { limit = 0; }
-		};
-
-		void *limitedAlloc(void *ud, void *ptr, size_t currSize, size_t newSize) noexcept;
-
-	} // namespace memory
-} // namespace lua
-
+/*-----------------------------------------------------------------------------------------------*/
 class LuaRuntime
 {
 private:
-	std::set<sol::lib> loadedLibs;
-	lua::memory::LimitedAllocatorState allocatorState;
+	lua::memory::LimitedAllocatorState allocatorState{};
+	lua::memory::Allocator allocatorFn{nullptr};
 
 public:
 	sol::state state;
 
-	LuaRuntime() = default;
+private:
+	enum_set<sol::lib> loadedLibs;
+	lua::timeoutGuard::Watchdog timeoutGuard;
+
+public:
+	LuaRuntime()
+		: state{},
+		  timeoutGuard(state)
+	{}
+
 	~LuaRuntime() = default;
 
-	LuaRuntime(size_t memoryLimit)
+	LuaRuntime(size_t memoryLimit, lua::memory::Allocator fn = lua::memory::limitedAlloc)
 		: allocatorState({.limit = memoryLimit}),
-		  state(sol::default_at_panic, lua::memory::limitedAlloc, &allocatorState)
+		  allocatorFn(fn),
+		  state(sol::default_at_panic, fn, &allocatorState),
+		  timeoutGuard(state)
 	{}
 
 	LuaRuntime(const LuaRuntime &) = delete;
@@ -90,15 +54,35 @@ public:
 	void require(sol::lib lib);
 
 	[[nodiscard]]
-	auto getAllocatorState() const
-		-> const lua::memory::LimitedAllocatorState& { return allocatorState; }
-};
+	bool usesLimitedAllocator() { return allocatorFn != nullptr; }
 
+	[[nodiscard]]
+	bool hasAllocError() const noexcept
+	{
+		return allocatorState.limitReached || allocatorState.overflow;
+	}
+	void resetAllocErrors() noexcept { allocatorState.resetErrorFlags(); }
+
+	[[nodiscard]]
+	auto getAllocatorState() const -> const lua::memory::LimitedAllocatorState &
+	{
+		return allocatorState;
+	}
+
+	[[nodiscard]]
+	auto makeTimeoutGuardedScope(std::chrono::milliseconds limit)
+		-> lua::timeoutGuard::GuardedScope
+	{
+		return lua::timeoutGuard::GuardedScope{timeoutGuard, limit};
+	}
+};
+/*-----------------------------------------------------------------------------------------------*/
 class LuaSandbox
 {
 public:
 	enum class Presets { Core, Minimal, Complete, Custom };
 	using Paths = std::vector<fs::path>;
+	using ResultOrErrorMsg = std::tuple<sol::object, sol::object>;
 
 	explicit LuaSandbox(LuaRuntime &runtime,
 						Presets preset,
@@ -128,7 +112,14 @@ public:
 
 	[[nodiscard]]
 	bool require(sol::lib lib);
-	void allowScriptPath(const fs::path &path);
+	bool allowScriptPath(const fs::path &path);
+
+	[[nodiscard]]
+	auto makeTimeoutGuardedScope(std::chrono::milliseconds limit)
+		-> lua::timeoutGuard::GuardedScope
+	{
+		return runtime->makeTimeoutGuardedScope(limit);
+	}
 
 private:
 	using LibNames = std::vector<std::string_view>;
@@ -163,20 +154,25 @@ private:
 	auto toScriptPath(const std::string &fileName) const -> fs::path;
 
 	[[nodiscard]]
-	bool isPathAllowed(const fs::path &scriptFile) const
-	{
-		return fs_utils::startsWith(scriptFile, allowedScriptPaths);
-	}
+	bool isPathAllowed(const fs::path &scriptFile) const;
 
+	[[nodiscard]]
+	auto checkIfAllowedToLoad(const fs::path &scriptFile) const
+		-> std::tuple<bool, std::string_view>;
+
+	auto loadfileReplace(sol::stack_object fileName) -> ResultOrErrorMsg;
 	auto dofileReplace(sol::stack_object fileName) -> sol::protected_function_result;
-	auto requireReplace(sol::stack_object target) -> sol::protected_function_result;
+	auto dofileSafe(sol::stack_object fileName) -> sol::variadic_results;
+	auto requireReplace(sol::stack_object target) -> sol::object;
+	auto requireFile(sol::stack_object fileName) -> ResultOrErrorMsg;
+
 	void printReplace(sol::variadic_args args);
 
 	void loadSafeExternalScriptFilesRoutine();
 	void loadSafePrint();
 
 private:
-	LuaRuntime *runtime {nullptr};
+	LuaRuntime *runtime = {nullptr};
 	sol::environment sandbox;
 
 	Presets preset{Presets::Core};
@@ -187,7 +183,7 @@ private:
 
 	std::ostream *printOutStrm;
 
-	std::set<sol::lib> loadedLibs;
+	enum_set<sol::lib> loadedLibs;
 
 	static const SandboxPresets sandboxPresets;
 	static const LibsSandboxingRulesMap libsSandboxingRules;
