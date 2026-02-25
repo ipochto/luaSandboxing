@@ -382,7 +382,7 @@ public:
     LuaSandbox &operator=(LuaSandbox &&) = default;
 
     // Перегружаем [], чтобы снаружи был прозрачный доступ к элементам песочницы
-    auto operator[](auto &&key) noexcept
+    auto operator[](auto &&key)
     {
         return sandbox[std::forward<decltype(key)>(key)];
     }
@@ -499,7 +499,7 @@ namespace lua
     } // namespace details
 
     // Собственно сам хелпер.
-    constexpr auto libName(sol::lib lib) noexcept -> std::optional<std::string_view>
+    constexpr auto libName(sol::lib lib) -> std::optional<std::string_view>
     {
         auto findLib = [lib](auto &lookup) -> bool { return lookup.lib == lib; };
 
@@ -511,7 +511,7 @@ namespace lua
     }
 
     // Ну и чтобы два раза не вставать, сразу добавим обратный.
-    constexpr auto libByName(std::string_view libName) noexcept -> std::optional<sol::lib>
+    constexpr auto libByName(std::string_view libName) -> std::optional<sol::lib>
     {
         auto findLibName = [libName](auto &lookup) -> bool { return lookup.name == libName; };
 
@@ -624,7 +624,7 @@ bool LuaSandbox::loadLib(sol::lib lib)
 }
 
 // Просто проверка на наличие правил для конкретной библиотеки
-auto LuaSandbox::checkRulesFor(sol::lib lib) const noexcept
+auto LuaSandbox::checkRulesFor(sol::lib lib)
     -> opt_cref<LibSymbolsRules>
 {
     if (const auto it = libsSandboxingRules.find(lib); it =! libsSandboxingRules.end()) {
@@ -641,7 +641,7 @@ public:
     bool loadLib(sol::lib lib);
 
 private:
-    auto LuaSandbox::checkRulesFor(sol::lib lib) const noexcept
+    auto LuaSandbox::checkRulesFor(sol::lib lib)
         -> opt_cref<LibSymbolsRules>
 
     std::set<sol::lib> loadedLibs;
@@ -917,7 +917,7 @@ private:
     void setPathsForScripts(const fs::path &root, const Paths &allowed);
 
     // Преобразует текст в путь в т.ч. с учётом базового (для относительных)
-    auto toScriptPath(const std::string &fileName) const -> fs::path;
+    auto toScriptPath(const std::string &fileName) -> fs::path;
     ...
 private:
     // Храним как абсолютные, лексически нормализованные
@@ -954,7 +954,7 @@ bool LuaSandbox::allowScriptPath(const fs::path &path)
     return true;
 }
 
-auto LuaSandbox::toScriptPath(const std::string &fileName) const
+auto LuaSandbox::toScriptPath(const std::string &fileName)
     -> fs::path
 {
     auto scriptPath = fs::path(fileName);
@@ -1036,7 +1036,7 @@ namespace fs_utils
 - И на его содержимое. Точнее, на то, что он **не** содержит уже скомпилированный байткод, т.к. он позволяет обойти ограничения песочницы.
 
 ```cpp
-auto LuaSandbox::checkIfAllowedToLoad(const fs::path &scriptFile) const
+auto LuaSandbox::checkIfAllowedToLoad(const fs::path &scriptFile)
     -> std::tuple<bool, std::string_view> // Статус и текст ошибки, если она есть
 {
     if (!fs::exists(scriptFile)) {
@@ -1057,8 +1057,8 @@ class LuaSandbox
 {
     ...
 private:
-    bool isPathAllowed(const fs::path &scriptFile) const;
-    auto checkIfAllowedToLoad(const fs::path &scriptFile) const
+    bool isPathAllowed(const fs::path &scriptFile);
+    auto checkIfAllowedToLoad(const fs::path &scriptFile)
         -> std::tuple<bool, std::string_view>;
     ...
 };
@@ -1069,7 +1069,7 @@ private:
 С проверкой допустимости пути тоже всё довольно просто:
 
 ```cpp
-bool LuaSandbox::isPathAllowed(const fs::path &scriptFile) const
+bool LuaSandbox::isPathAllowed(const fs::path &scriptFile)
 {
     if (scriptFile.empty()) {
         return false;
@@ -1813,7 +1813,7 @@ sol::state lua(sol::default_at_panic, limitedAlloc, &allocState);
 
 Да, немаловажный момент: обращаю внимание на то, что аллокатор именно на Lua-стейт ставится. То есть он у нас будет общий на все песочницы, которые крутятся на этом стейте. Следовательно, и лимит на выделяемый объём памяти будет общий для всех них — это нужно учитывать при его определении. Если же прям жёсткого контроля захочется, то тогда придётся работать по схеме один рантайм — одна песочница.
 
-На этом теории, пожалуй, хватит.
+На этом, пожалуй, хватит теории.
 
 Поехали:
 
@@ -1832,13 +1832,12 @@ namespace lua::memory
         bool limitReached {false};
         bool overflow {false};
 
-        [[nodiscard]]
-        bool isLimitEnabled() const { return limit > 0; }
+        bool isLimitEnabled() { return limit > 0; }
         void disableLimit() { limit = 0; }
-        void resetErrorFlags() noexcept { limitReached = overflow = false; }        
+        void resetErrorFlags() { limitReached = overflow = false; }        
     };
 
-    void *limitedAlloc(void *ud, void *ptr, size_t currSize, size_t newSize) noexcept
+    void *limitedAlloc(void *ud, void *ptr, size_t currSize, size_t newSize)
     {
         auto *allocState = static_cast<LimitedAllocatorState*>(ud);
 
@@ -1945,21 +1944,18 @@ public:
         }
     }
 
-    [[nodiscard]]
-    bool hasAllocError() const noexcept
+    bool hasAllocError()
     {
         return allocatorState.limitReached || allocatorState.overflow;
     }
-    void resetAllocErrors() noexcept { allocatorState.resetErrorFlags(); }
+    void resetAllocErrors() { allocatorState.resetErrorFlags(); }
 
-    [[nodiscard]]
-    auto getAllocatorState() const
+    auto getAllocatorState()
         -> const lua::memory::LimitedAllocatorState &
     { 
         return allocatorState;
     }
 
-    [[nodiscard]]
     bool usesLimitedAllocator() { return allocatorFn != nullptr; }
  
     // Ну и механизм изменения лимита на лету — потом пригодится.
@@ -2178,7 +2174,7 @@ void defaultHook(lua_State *L, lua_Debug* /*ar*/)
 
 Так что примерно здесь халява с готовыми решениями закончилась, пошли искать варианты на передачу `HookContext` в сам обработчик прерывания.
 
-- В принципе, у нас есть Lua-стейт — можно прямо в него, как Lua-объект. Вот только доступ к нему будет и у скриптов. И даже если сделать его поля read-only через `sol::readonly` или `sol::properety`, то мы никак не сможем запретить перезаписать весь объект, плюс попытка записи в read-only поля генерирует ошибку, а это — дополнительный канал для утечки стабильности.
+- В принципе, у нас есть Lua-стейт — можно прямо в него, как Lua-объект. Вот только доступ к нему будет и у скриптов. И даже если сделать его поля read-only через `sol::readonly` или `sol::property`, то мы никак не сможем запретить перезаписать весь объект, плюс попытка записи в read-only поля генерирует ошибку, а это — дополнительный канал для утечки стабильности.
 - Лямбду с захватом в качестве хука подсунуть не получится — она просто не преобразуется к указателю на функцию.
 - Через глобальную переменную? У нас может быть несколько рантаймов и каждому свой независимый `HookContext` нужен. Помещать в неё контекст текущего рантайма перед активацией защиты по таймауту? А если в соседнем потоке другой рантайм в этот момент крутится? То есть это уже либо делать её `thread_local` и следить за тем, чтобы каждый Lua-стейт дёргался только из одного потока, либо делать глобальный контейнер с контекстами, из которого каждый хук каким-то образом будет выбирать именно свой.
 - Ну, либо почитать в конце концов документацию и найти там специально заточенный под это механизм — реестр _(Lua registry)_.
@@ -2231,7 +2227,7 @@ namespace lua::registry
     {
         inline static char kTag{}; // В чём смысл бытия? В самом существовании.
                                    // Ну и уникальный адрес в качестве сайд-эффекта
-        static auto key() noexcept -> Key { return Key{&kTag}; }
+        static auto key() -> Key { return Key{&kTag}; }
     };
 } // namespace lua::registry
 ```
@@ -2357,9 +2353,9 @@ guardCtxRegistry::remove(lua.state);
 
 ## We need to go deeper (с) Ди Каприо
 
-Во-первых, помещение контекста в реестр и регистрация хука — это те операции, которые прямо просятся сделать их всего один раз, при создании рантайма. Ну ладно два — их выгрузка из Lua-стейта тоже считается. И в дальнейшем просто оборачивать активацией и сбросом таймера каждый вызов Lua-кода, который мы хотим обезопасить. Но если копнуть чуть глубже, то у нас всё это время будут активными сразу ~~две бомбы~~ два глобальных состояния — сам хук, и запись в реестре. Что если кто-то захочет для какого-то отдельного куска Lua-кода использовать свою пару контекст/обработчик? А ведь хуки можно и для других целей использовать, где гарантия, что кто-нибудь не захочет параллельно воспользоваться этим механизмом? А тут уже просто постановкой и регистрацией не отделаешься — здравствуйте проверки установленного/сохранение/восстановление после использования.
+Во-первых, помещение контекста в реестр и регистрация хука — это те операции, которые прямо просятся сделать их всего один раз, при создании рантайма. Ну ладно, два — их выгрузка из Lua-стейта тоже считается. И в дальнейшем просто оборачивать активацией и сбросом таймера каждый вызов Lua-кода, который мы хотим обезопасить. Но если копнуть чуть глубже, то у нас всё это время будут активными сразу ~~две бомбы~~ два глобальных состояния — сам хук, и запись в реестре. Что если кто-то захочет для какого-то отдельного куска Lua-кода использовать свою пару контекст/обработчик? А ведь хуки можно и для других целей использовать — где гарантия, что кто-нибудь не захочет параллельно воспользоваться этим механизмом? А тут уже просто постановкой и регистрацией не отделаешься — здравствуйте проверки установленного/сохранение/восстановление после использования.
 
-А, ведь можно ещё глубже зарыться — вложенные вызовы: например, на стороне Lua вызываем безобидную функцию:
+А, ведь, можно ещё глубже зарыться — вложенные вызовы: например, на стороне Lua вызываем безобидную функцию:
 
 ```cpp
 auto guard = HookContext{};
@@ -2403,7 +2399,7 @@ sandbox["acceptTheFiefOfArrakis"] = [&]() -> sol::protectef_function_result {
 
 И вот, в свете того, что нам сейчас придётся как-то разруливать потенциальные проблемы с глобальными состояниями, которые могут быть изменены где и кем только не, идея с загрузкой контекста и хука перед каждым использованием уже перестаёт восприниматься как нечто иррациональное. И становится даже более чем рациональным после того, как посчитать реальные затраты на загрузку/выгрузку и понять, что они просто ничтожно малы по сравнению с затратами на исполнение самого защищаемого Lua-кода. Ну и добьём тем, что контроль времени выполнения требуется очень далеко не для всего Lua-кода, и даже более — нам никто не мешает реализоваться такую опцию, как "только первый запуск с контролем", после чего скрипт/функция переходит в разряд доверенных.
 
-Поэтому, чтобы сейчас не переусложнять объяснение, есть предложение на данном этапе остановиться на решении в лоб, а тонкую оптимизацию оставить на потом _(если, конечно, профайлинг(!) покажет (покажет!), что многократные постановки и снятия хука с его контекстом, действительно, дают просадку производительности)_. Кто сказал "технический долг"?
+Поэтому, чтобы сейчас не переусложнять объяснение, есть предложение — на данном этапе остановиться на решении в лоб, а тонкую оптимизацию оставить на потом _(если, конечно, профайлинг(!) покажет (покажет!), что многократные постановки и снятия хука с его контекстом, действительно, дают просадку производительности)_. Кто сказал "технический долг"?
 
 Итак, решение "в лоб":
 Каждый запуск Lua-кода с защитой по таймауту предваряется регистрацией контекста и хука, которые выгружаются при завершении. Если хук или контекст уже были установлены — защита не активируется. Но в пределах такого блока оставляем возможность для реактивации таймера — продления его времени действия, чтобы можно было последовательно несколько кусков Lua-кода выполнить.
@@ -2414,7 +2410,7 @@ sandbox["acceptTheFiefOfArrakis"] = [&]() -> sol::protectef_function_result {
 
 А во-вторых, обещанная автоматизация потребует определённой подготовки.
 
-Для начала обмажемся ещё одним слоем абстракции: `Watchdog`, на плечи которой ляжет рутина по регистрации контекста в реестре, постановка хука и активация таймера, включая проверки естественно. Ну и обратные действия конечно. Кроме того, `Watchdog` у нас будет привязываться к конкретному Lua-стейту.
+Для начала обмажемся ещё одним слоем абстракции: `Watchdog`, на плечи которого ляжет рутина по регистрации контекста в реестре, постановка хука и активация таймера, включая проверки естественно. Ну и обратные действия конечно. Кроме того, `Watchdog` у нас будет привязываться к конкретному Lua-стейту.
 
 ```cpp
 namespace lua::timeoutGuard
@@ -2452,7 +2448,7 @@ namespace lua::timeoutGuard
         Watchdog &operator=(Watchdog &&) = delete;
 
         // При уничтожении объекта обязательно нужно подчистить за собой Lua-стейт:
-        // снять хук, если остался и выгрузить контекс из реестра
+        // снять хук, если остался, и выгрузить контекст из реестра
         ~Watchdog() { detach(); }
 
         // Привязка к Lua-стейту
@@ -2465,7 +2461,7 @@ namespace lua::timeoutGuard
         // которую будем вызывать 
         bool configureHook(InstructionsCount newCheckPeriod, lua_Hook newHook);
 
-        bool armed() { return running; } // Праверка активности зашиты
+        bool armed() { return running; } // Проверка активности защиты
         bool timedOut() { return context.isTimedOut(); } // Проверка сработки
 
         bool arm(time::milliseconds limit);   // Активация защиты
@@ -2505,7 +2501,7 @@ namespace lua::timeoutGuard
         lua = nullptr;
     }
 
-    // Задаём параметры хука — период вызова и саму функцию — обработчик
+    // Задаём параметры хука — период вызова и саму функцию — обработчик.
     // Здесь только задаём значения, в Lua-стейт не ставится!
     bool Watchdog::configureHook(InstructionsCount newCheckPeriod, lua_Hook newHook)
     {
@@ -2725,7 +2721,7 @@ namespace lua::timeoutGuard
 		}
 
         // Возможность продления времени действия таймера для последующих
-        // порций Lua-кода хапускаемых в этом же scope
+        // порций Lua-кода запускаемых в этом же scope
 		bool rearm(time::milliseconds limit = kDefaultLimit)
 		{
 			if (disabled()) {
